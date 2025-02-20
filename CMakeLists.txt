@@ -234,3 +234,11 @@ configure_file(cmake/llama.pc.in
 
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+
+# Specify the PAPI include and library directories
+include_directories("/usr/include")  # or where papi.h is located
+link_directories("/usr/lib/x86_64-linux-gnu/")  # or where libpapi.so is located
+
+# Link PAPI to the target
+target_link_libraries(llama-cli PRIVATE papi)
