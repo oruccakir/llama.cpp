@@ -7,9 +7,13 @@
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
-#include <papi.h>
+
 #include <filesystem>
 #include <variant>
+
+#ifdef ENABLE_PAPI
+#include <papi.h>
+#endif
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
