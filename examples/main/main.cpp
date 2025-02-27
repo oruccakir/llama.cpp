@@ -112,8 +112,6 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     // parse command line arguments
 
     std :: string papi_event_name;
-    bool papi_profiling_flag = false;
-
 
     // load the input embeddings
     std::vector<float> input_embeddings = load_input_embeddings(embd_file_path);
@@ -653,7 +651,7 @@ void print_help(){
 
 int main(int argc, char ** argv) {
     std::unordered_map<std::string,std::string> mix_modal_modal_mode_config, default_mode_config,benchmark_mode_config;
-    std::string model_gguf_file_path, user_prompt, embd_file_path, papi_result_dir_path, model_id, benchmark_name, program_mode,n_tokens, n_gpu_layers, use_papi;
+    std::string model_gguf_file_path, user_prompt, embd_file_path, papi_result_dir_path, model_id, benchmark_name, program_mode,n_tokens, n_gpu_layers;
 
     for(int i=1; i<argc; i++){
         if(strcmp(argv[i],"--help")==0){
@@ -688,14 +686,6 @@ int main(int argc, char ** argv) {
         else if(strcmp(argv[i],"-ngl")==0){
             if (i + 1 < argc) {
                 n_gpu_layers = argv[++i];
-            } else {
-                print_help();
-                return 1;
-            }
-        }
-        else if(strcmp(argv[i],"-papi")==0){
-            if (i + 1 < argc) {
-                use_papi = argv[++i];
             } else {
                 print_help();
                 return 1;
@@ -756,7 +746,6 @@ int main(int argc, char ** argv) {
     mix_modal_modal_mode_config["n_tokens"]=n_tokens;
     mix_modal_modal_mode_config["n_gpu_layers"]=n_gpu_layers;
     mix_modal_modal_mode_config["embd_file_path"]=embd_file_path;
-    mix_modal_modal_mode_config["use_papi"]=use_papi;
     mix_modal_modal_mode_config["papi_result_dir_path"]=papi_result_dir_path;
 
     benchmark_mode_config["model_gguf_file_path"]=model_gguf_file_path;
