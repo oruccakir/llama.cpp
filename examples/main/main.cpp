@@ -21,6 +21,7 @@ const std::string MIX_MODAL_MODE = "mix_modal";
 const std::string BENCHMARK_MODE = "benchmark";
 
 
+#ifdef ENABLE_PAPI
 void handle_error(int retval) {
     std::cerr << "PAPI error: " << retval << ", " << PAPI_strerror(retval) << std::endl;
 }
@@ -42,6 +43,7 @@ void save_papi_events_to_json_file(const std::string save_file_path,long long *v
     save_file << papi_results.dump(4);
     save_file.close();
 }
+#endif
 
 std::vector<float> load_input_embeddings(const std::string& embd_file_path) {
     std::ifstream file(embd_file_path, std::ios::binary);
@@ -109,13 +111,6 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     bool papi_profiling_flag = false;
 
 
-    int EventSet = PAPI_NULL,retval=0,preset_event_count=0;
-    unsigned int preset_event = 0x0;
-    PAPI_event_info_t preset_event_info;
-    int presetEventCodes[PAPI_MAX_PRESET_EVENTS]; 
-    long long papi_start_cycles, papi_end_cycles, papi_start_usec, papi_end_usec;
-
-    
     // load the input embeddings
     std::vector<float> input_embeddings = load_input_embeddings(embd_file_path);
     const int n_tokens = input_embeddings.size() / n_embd;
@@ -186,7 +181,15 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     int n_decode = 0;
     llama_token new_token_id;
 
-    if(papi_profiling_flag){
+    
+    #ifdef ENABLE_PAPI
+
+        int EventSet = PAPI_NULL,retval=0,preset_event_count=0;
+        unsigned int preset_event = 0x0;
+        PAPI_event_info_t preset_event_info;
+        int presetEventCodes[PAPI_MAX_PRESET_EVENTS]; 
+        long long papi_start_cycles, papi_end_cycles, papi_start_usec, papi_end_usec;
+
         retval = PAPI_library_init(PAPI_VER_CURRENT);
         if (retval != PAPI_VER_CURRENT)
             handle_error(retval);
@@ -234,7 +237,8 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
 
         papi_start_cycles = PAPI_get_real_cyc();
         papi_start_usec = PAPI_get_real_usec();
-    }
+    
+    #endif
 
 
     for (int n_pos = 0; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
@@ -276,7 +280,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     printf("\n");
     printf("n_decode: %d\n", n_decode);
 
-    if(papi_profiling_flag){
+    #ifdef ENABLE_PAPI
 
         papi_end_cycles = PAPI_get_real_cyc();
         papi_end_usec = PAPI_get_real_usec();
@@ -296,7 +300,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
         printf("\n\033[0;32mPAPI Profiling Completed!\n\033[0m");
 
         save_papi_events_to_json_file(papi_results_save_file_path,values,preset_event_count,presetEventCodes,papi_end_cycles - papi_start_cycles,papi_end_usec - papi_start_usec);
-    }
+    #endif
 
     const auto t_main_end = ggml_time_us();
 

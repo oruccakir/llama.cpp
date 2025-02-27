@@ -237,8 +237,17 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
 
 
 # Specify the PAPI include and library directories
-include_directories("/usr/include")  # or where papi.h is located
-link_directories("/usr/lib/x86_64-linux-gnu/")  # or where libpapi.so is located
+#include_directories("/usr/include")  # or where papi.h is located
+#link_directories("/usr/lib/x86_64-linux-gnu/")  # or where libpapi.so is located
 
 # Link PAPI to the target
-target_link_libraries(llama-cli PRIVATE papi)
+#target_link_libraries(llama-cli PRIVATE papi)
+
+
+option(ENABLE_PAPI "Enable PAPI support" ON)
+
+if (ENABLE_PAPI)
+    include_directories("/usr/include")
+    link_directories("/usr/lib/x86_64-linux-gnu/")
+    target_link_libraries(llama-cli PRIVATE papi)
+endif()
