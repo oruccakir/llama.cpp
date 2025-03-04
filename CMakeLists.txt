@@ -244,10 +244,12 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
 #target_link_libraries(llama-cli PRIVATE papi)
 
 
-option(ENABLE_PAPI "Enable PAPI support" ON)
+option(ENABLE_PAPI "Enable PAPI support" OFF)
 
 if (ENABLE_PAPI)
     include_directories("/usr/include")
     link_directories("/usr/lib/x86_64-linux-gnu/")
     target_link_libraries(llama-cli PRIVATE papi)
+    message(STATUS "PAPI profiling support is enabled")
+    target_compile_definitions(llama-cli PRIVATE ENABLE_PAPI)
 endif()

@@ -24,13 +24,24 @@ const std::string DEFAULT_MODE   = "default";
 const std::string MIX_MODAL_MODE = "mix_modal";
 const std::string BENCHMARK_MODE = "benchmark";
 
+std::vector<float> load_input_embeddings(const std::string& embd_file_path);
+std::vector<std::string> getEmbeddingBinFiles(const std::string& directoryPath);
+int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::string> config);
+int run_default_mode(std::unordered_map<std::string,std::string> config);
+int run_benchmark(std::unordered_map<std::string, std::string> config);
+void print_help();
+#ifdef ENABLE_PAPI
+void handle_error(int retval);
+void save_papi_events_to_json_file(const std::string save_file_path,std::vector<long long> values, int preset_event_count, int *presetEventCodes, long long real_time, long long user_time);
+#endif
+
 
 #ifdef ENABLE_PAPI
 void handle_error(int retval) {
     std::cerr << "PAPI error: " << retval << ", " << PAPI_strerror(retval) << std::endl;
 }
 
-void save_papi_events_to_json_file(const std::string save_file_path,long long *values, int preset_event_count, int *presetEventCodes, long long real_time, long long user_time){
+void save_papi_events_to_json_file(const std::string save_file_path,std::vector<long long> values, int preset_event_count, int *presetEventCodes, long long real_time, long long user_time){
     PAPI_event_info_t preset_event_info;
     json papi_results;
     papi_results["PAPI_cycles"] = real_time;
@@ -88,7 +99,10 @@ static void print_usage(int, char ** argv) {
 }
 
 int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::string> config){
-    fs :: path repo_path = fs :: current_path();
+    const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
+    // Ortam değişkeni tanımlıysa onu kullan, yoksa current_path() al
+    fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
+    //fs :: path repo_path = fs :: current_path();
     const std::string common_data_path = repo_path.string() + "/config.json";
     json common_data;
     std::ifstream json_file(common_data_path);
@@ -188,9 +202,9 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
 
     
     #ifdef ENABLE_PAPI
-
+        printf("Enable Papi profiling\n");
         int EventSet = PAPI_NULL,retval=0,preset_event_count=0;
-        unsigned int preset_event = 0x0;
+        int preset_event = 0x0;
         PAPI_event_info_t preset_event_info;
         int presetEventCodes[PAPI_MAX_PRESET_EVENTS]; 
         long long papi_start_cycles, papi_end_cycles, papi_start_usec, papi_end_usec;
@@ -290,8 +304,8 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
         papi_end_cycles = PAPI_get_real_cyc();
         papi_end_usec = PAPI_get_real_usec();
 
-        long long values[preset_event_count + 1];
-        retval = PAPI_stop(EventSet, values);
+        std::vector<long long> values(preset_event_count + 1);
+        retval = PAPI_stop(EventSet, values.data());
         if (retval != PAPI_OK)
             handle_error(retval);
         printf("\n--- PAPI Event Results ---\n");
@@ -467,8 +481,11 @@ int run_default_mode(std::unordered_map<std::string,std::string> config) {
 }
 
 int run_benchmark(std::unordered_map<std::string, std::string> config){
-    fs :: path repo_path = fs :: current_path();
+    const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
+    fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
+    //fs :: path repo_path = fs :: current_path();
     const std::string common_data_path = repo_path.string() + "/config.json";
+    std :: cout << repo_path << std :: endl;
     json common_data;
     std::ifstream json_file(common_data_path);
     if (json_file.is_open()) {
@@ -516,7 +533,7 @@ int run_benchmark(std::unordered_map<std::string, std::string> config){
         return 1;
     }
 
-    for(int i=0; i<benchmark_embeddings.size(); i++){
+    for(size_t i=0; i<benchmark_embeddings.size(); i++){
         std::cout << "Model ID: " << benchmark_embeddings[i] << std::endl;
         std::vector<float> input_embeddings = load_input_embeddings(embd_dir_path+"/"+benchmark_embeddings[i]);
         const int n_tokens = input_embeddings.size() / n_embd;
