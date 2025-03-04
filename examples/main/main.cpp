@@ -98,10 +98,13 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
         fprintf(stderr, "Failed to open common data file\n");
         return 1;
     }
-    std::string papi_results_save_file_path = config["papi_res_path"];
+    
     const int n_embd = common_data["n_embd"];
     std :: string embd_file_path=  config["embd_file_path"];
-
+    std :: string model_id      =  config["model_id"];
+    std::string papi_results_save_file_path = common_data[model_id+"_papi_profilings_results_dir_path"];
+    std::cout << model_id << std::endl;
+    std::cout << papi_results_save_file_path << std::endl;
     // path to the model gguf file
     std::string model_path = config["model_gguf_file_path"];
     // number of tokens to predict
@@ -639,10 +642,8 @@ void print_help(){
     printf("  -n <n_predict>           Number of tokens to predict (default: 32)\n");
     printf("  -ngl <n_gpu_layers>      Number of layers to offload to the GPU (default: 99)\n");
     printf("  -embd <embd_file_path>   Path to the input embeddings file\n");
-    printf("  -papi <0|1>              Enable or disable PAPI profiling (0: disable, 1: enable)\n");
-    printf("  -papi_res_pth <path>     Path to save PAPI results in JSON format\n");
     printf("Benchmark Mode\n");
-    printf("  -m_id <model_name          Model name for now, deepseek and chameleon available");
+    printf("  -m_id <model_name        Model name for now, deepseek and chameleon available");
     printf("  -m <model_path>          Path to the model gguf file\n");
     printf("  -n <n_predict>           Number of tokens to predict (default: 32)\n");
     printf("  -ngl <n_gpu_layers>      Number of layers to offload to the GPU (default: 99)\n");
@@ -651,7 +652,7 @@ void print_help(){
 
 int main(int argc, char ** argv) {
     std::unordered_map<std::string,std::string> mix_modal_modal_mode_config, default_mode_config,benchmark_mode_config;
-    std::string model_gguf_file_path, user_prompt, embd_file_path, papi_result_dir_path, model_id, benchmark_name, program_mode,n_tokens, n_gpu_layers;
+    std::string model_gguf_file_path, user_prompt, embd_file_path, model_id, benchmark_name, program_mode,n_tokens, n_gpu_layers;
 
     for(int i=1; i<argc; i++){
         if(strcmp(argv[i],"--help")==0){
@@ -714,16 +715,7 @@ int main(int argc, char ** argv) {
                 print_help();
                 return 1;
             }
-        }
-        else if(strcmp(argv[i],"-papi_res_pth")==0){
-            if (i + 1 < argc) {
-                papi_result_dir_path = argv[++i];
-            } else {
-                print_help();
-                return 1;
-            }
-        }
-        else if(strcmp(argv[i],"-bench")==0){
+        }else if(strcmp(argv[i],"-bench")==0){
             if (i + 1 < argc) {
                 benchmark_name = argv[++i];
             } else {
@@ -746,7 +738,7 @@ int main(int argc, char ** argv) {
     mix_modal_modal_mode_config["n_tokens"]=n_tokens;
     mix_modal_modal_mode_config["n_gpu_layers"]=n_gpu_layers;
     mix_modal_modal_mode_config["embd_file_path"]=embd_file_path;
-    mix_modal_modal_mode_config["papi_result_dir_path"]=papi_result_dir_path;
+    mix_modal_modal_mode_config["model_id"]=model_id;
 
     benchmark_mode_config["model_gguf_file_path"]=model_gguf_file_path;
     benchmark_mode_config["n_tokens"]=n_tokens;
