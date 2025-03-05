@@ -117,8 +117,6 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     std :: string embd_file_path=  config["embd_file_path"];
     std :: string model_id      =  config["model_id"];
     std::string papi_results_save_file_path = common_data[model_id+"_papi_profilings_results_dir_path"];
-    std::cout << model_id << std::endl;
-    std::cout << papi_results_save_file_path << std::endl;
     // path to the model gguf file
     std::string model_path = config["model_gguf_file_path"];
     // number of tokens to predict
