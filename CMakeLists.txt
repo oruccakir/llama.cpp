@@ -245,11 +245,22 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
 
 
 option(ENABLE_PAPI "Enable PAPI support" OFF)
+execute_process(COMMAND bash "-c" "if [[ -n \"$SSH_CONNECTION\" || -n \"$SSH_CLIENT\" ]]; then echo REMOTE; else echo LOCAL; fi"
+    OUTPUT_VARIABLE SSH_STATUS
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 if (ENABLE_PAPI)
-    include_directories("/usr/include")
-    link_directories("/usr/lib/x86_64-linux-gnu/")
+    if (SSH_STATUS STREQUAL "REMOTE")
+        message(STATUS "Remote server detected, using PAPI module")
+        execute_process(COMMAND module load papi)
+    else()
+        include_directories("/usr/include")
+        link_directories("/usr/lib/x86_64-linux-gnu/")
+    endif()
+
     target_link_libraries(llama-cli PRIVATE papi)
     message(STATUS "PAPI profiling support is enabled")
     target_compile_definitions(llama-cli PRIVATE ENABLE_PAPI)
 endif()
+
+
