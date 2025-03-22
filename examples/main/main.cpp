@@ -257,6 +257,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     
     #endif
 
+    std :: string model_output = "";
 
     for (int n_pos = 0; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
         // evaluate the current batch with the transformer model
@@ -284,6 +285,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
                 return 1;
             }
             std::string s(buf, n);
+            model_output += s.c_str();
             printf("%s", s.c_str());
             fflush(stdout);
 
@@ -293,9 +295,6 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
             n_decode += 1;
         }
     }
-
-    printf("\n");
-    printf("n_decode: %d\n", n_decode);
 
     #ifdef ENABLE_PAPI
 
@@ -322,6 +321,18 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     const auto t_main_end = ggml_time_us();
 
     printf("execution_time: %.2f\n", (t_main_end - t_main_start) / 1000000.0f);
+
+    printf("{\n");
+    printf("  \"embedding_file_path\": \"%s\",\n", embd_file_path.c_str());
+    printf("  \"model_gguf_file_path\": \"%s\",\n", model_path.c_str());
+    printf("  \"model_id\": \"%s\",\n", model_id.c_str());
+    printf("  \"n_tokens\": %d,\n", n_tokens);
+    printf("  \"n_decoded_tokens\": %d,\n", n_decode);
+    printf("  \"n_predict\": %d,\n", n_predict);
+    printf("  \"n_gpu_layers\": %d,\n", ngl);
+    printf("  \"inference_time_sec\": %.4f,\n", (t_main_end - t_main_start) / 1000000.0f);
+    printf("  \"output_text\": \"%s\"\n", model_output); 
+    printf("}\n");
 
     fprintf(stderr, "%s: decoded %d tokens in %.2f s, speed: %.2f t/s\n",
             __func__, n_decode, (t_main_end - t_main_start) / 1000000.0f, n_decode / ((t_main_end - t_main_start) / 1000000.0f));
