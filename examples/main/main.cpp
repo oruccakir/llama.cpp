@@ -331,7 +331,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     printf("  \"n_predict\": %d,\n", n_predict);
     printf("  \"n_gpu_layers\": %d,\n", ngl);
     printf("  \"inference_time_sec\": %.4f,\n", (t_main_end - t_main_start) / 1000000.0f);
-    printf("  \"output_text\": \"%s\"\n", model_output); 
+    printf("  \"output_text\": \"%s\"\n", model_output.c_str()); 
     printf("}\n");
 
     fprintf(stderr, "%s: decoded %d tokens in %.2f s, speed: %.2f t/s\n",
