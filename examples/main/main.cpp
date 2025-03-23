@@ -286,7 +286,7 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
             }
             std::string s(buf, n);
             model_output += s.c_str();
-            printf("%s", s.c_str());
+            //printf("%s", s.c_str());
             fflush(stdout);
 
             // prepare the next batch with the sampled token
@@ -319,8 +319,6 @@ int run_mix_modal_model_with_embeddings(std::unordered_map<std::string, std::str
     #endif
 
     const auto t_main_end = ggml_time_us();
-
-    printf("execution_time: %.2f\n", (t_main_end - t_main_start) / 1000000.0f);
 
     printf("{\n");
     printf("  \"embedding_file_path\": \"%s\",\n", embd_file_path.c_str());
