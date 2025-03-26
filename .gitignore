@@ -1,3 +1,7 @@
+# add cpu and gpu run support at the same time, create diiferent build directories for each
+build_cuda/
+
+
 # Extensions
 
 *.a
