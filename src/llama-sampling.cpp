@@ -404,7 +404,6 @@ llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_conte
     auto token = cur_p.data[cur_p.selected].id;
 
     llama_sampler_accept(smpl, token);
-
     return token;
 }
 

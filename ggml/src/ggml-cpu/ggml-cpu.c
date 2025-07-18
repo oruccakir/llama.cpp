@@ -13940,6 +13940,22 @@ struct ggml_cplan ggml_graph_plan(
     return cplan;
 }
 
+/**
+ * List of all enum values to print node type.
+ */
+
+char* ggml_op_list[] = {
+        "GGML_OP_NONE", "GGML_OP_DUP", "GGML_OP_ADD", "GGML_OP_ADD1", "GGML_OP_ACC", "GGML_OP_SUB", "GGML_OP_MUL", "GGML_OP_DIV", "GGML_OP_SQR", "GGML_OP_SQRT", "GGML_OP_LOG", "GGML_OP_SIN", "GGML_OP_COS", "GGML_OP_SUM", "GGML_OP_SUM_ROWS", "GGML_OP_MEAN", "GGML_OP_ARGMAX", "GGML_OP_COUNT_EQUAL", "GGML_OP_REPEAT", "GGML_OP_REPEAT_BACK", "GGML_OP_CONCAT", "GGML_OP_SILU_BACK", "GGML_OP_NORM", "GGML_OP_RMS_NORM", "GGML_OP_RMS_NORM_BACK", "GGML_OP_GROUP_NORM", "GGML_OP_MUL_MAT", "GGML_OP_MUL_MAT_ID", "GGML_OP_OUT_PROD", "GGML_OP_SCALE", "GGML_OP_SET", "GGML_OP_CPY", "GGML_OP_CONT", "GGML_OP_RESHAPE", "GGML_OP_VIEW", "GGML_OP_PERMUTE", "GGML_OP_TRANSPOSE", "GGML_OP_GET_ROWS", "GGML_OP_GET_ROWS_BACK", "GGML_OP_DIAG", "GGML_OP_DIAG_MASK_INF", "GGML_OP_DIAG_MASK_ZERO", "GGML_OP_SOFT_MAX", "GGML_OP_SOFT_MAX_BACK", "GGML_OP_ROPE", "GGML_OP_ROPE_BACK", "GGML_OP_CLAMP", "GGML_OP_CONV_TRANSPOSE_1D", "GGML_OP_IM2COL", "GGML_OP_IM2COL_BACK", "GGML_OP_CONV_TRANSPOSE_2D", "GGML_OP_POOL_1D", "GGML_OP_POOL_2D", "GGML_OP_POOL_2D_BACK", "GGML_OP_UPSCALE", "GGML_OP_PAD", "GGML_OP_PAD_REFLECT_1D", "GGML_OP_ARANGE", "GGML_OP_TIMESTEP_EMBEDDING", "GGML_OP_ARGSORT", "GGML_OP_LEAKY_RELU", "GGML_OP_FLASH_ATTN_EXT", "GGML_OP_FLASH_ATTN_BACK", "GGML_OP_SSM_CONV", "GGML_OP_SSM_SCAN", "GGML_OP_WIN_PART", "GGML_OP_WIN_UNPART", "GGML_OP_GET_REL_POS", "GGML_OP_ADD_REL_POS", "GGML_OP_RWKV_WKV6", "GGML_OP_GATED_LINEAR_ATTN", "GGML_OP_UNARY", "GGML_OP_MAP_UNARY", "GGML_OP_MAP_BINARY", "GGML_OP_MAP_CUSTOM1_F32", "GGML_OP_MAP_CUSTOM2_F32", "GGML_OP_MAP_CUSTOM3_F32", "GGML_OP_MAP_CUSTOM1", "GGML_OP_MAP_CUSTOM2", "GGML_OP_MAP_CUSTOM3", "GGML_OP_CROSS_ENTROPY_LOSS", "GGML_OP_CROSS_ENTROPY_LOSS_BACK", "GGML_OP_OPT_STEP_ADAMW", "GGML_OP_COUNT"
+    };
+
+
+long long node_time_counter[1000] = {0};
+
+long long* get_node_time_counter(int* sz) {
+    *sz = sizeof(node_time_counter)/sizeof(long long);
+    return &node_time_counter[0];
+}
+
 static thread_ret_t ggml_graph_compute_thread(void * data) {
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
     struct ggml_threadpool    * tp    = state->threadpool;
@@ -13959,8 +13975,11 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
-
+        //ggml_op
+        int64_t stime = ggml_time_us();
         ggml_compute_forward(&params, node);
+        atomic_fetch_add_explicit(&node_time_counter[node_n], ggml_time_us()-stime, memory_order_relaxed);
+        //fprintf(stderr, "Compute forward %d, node type: [%s], time taken: (%ld) us\n", node_n, ggml_op_list[node->op], );
 
         if (state->ith == 0 && cplan->abort_callback &&
                 cplan->abort_callback(cplan->abort_callback_data)) {
@@ -14198,7 +14217,7 @@ struct ggml_threadpool * ggml_threadpool_new(struct ggml_threadpool_params * tpp
 
 enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
     ggml_cpu_init();
-
+    //std::cerr << "HERE" << std::endl;
     GGML_ASSERT(cplan);
     GGML_ASSERT(cplan->n_threads > 0);
     GGML_ASSERT(cplan->work_size == 0 || cplan->work_data != NULL);

@@ -1,3 +1,5 @@
+
+long long* get_node_time_counter(int* sz);
 #pragma once
 
 #include "ggml.h"

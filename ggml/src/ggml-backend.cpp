@@ -1350,10 +1350,12 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
     return true;
 }
 
+#include <iostream>
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     struct ggml_backend_sched_split * splits = sched->splits;
 
     for (int i = 0; i < sched->n_splits; i++) {
+        std::cerr << "Split: " << i << std::endl;
         struct ggml_backend_sched_split * split = &splits[i];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
@@ -1394,7 +1396,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         if (!sched->callback_eval) {
+        std::cerr << "Compute_async_begin" << std::endl;
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+        std::cerr << "Compute_async_end" << std::endl;
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
@@ -1574,18 +1578,27 @@ enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, st
     return err;
 }
 
+//#include <iostream>
 enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     if (!sched->is_reset && !sched->is_alloc) {
+        std::cerr << "Sched_reset_begin" << std::endl;
         ggml_backend_sched_reset(sched);
+        std::cerr << "Sched_reset_end" << std::endl;
     }
 
     if (!sched->is_alloc) {
+        std::cerr << "Sched_alloc_begin" << std::endl;
         if (!ggml_backend_sched_alloc_graph(sched, graph)) {
+        std::cerr << "Sched_alloc_failed" << std::endl;
             return GGML_STATUS_ALLOC_FAILED;
         }
+        std::cerr << "Sched_alloc_end" << std::endl;
     }
 
-    return ggml_backend_sched_compute_splits(sched);
+    std::cerr << "Compute_splits_begin" << std::endl;
+    auto ret = ggml_backend_sched_compute_splits(sched);
+    std::cerr << "Compute_splits_end" << std::endl;
+    return ret;
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {

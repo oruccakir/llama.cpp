@@ -1472,10 +1472,10 @@ struct llm_build_context {
         cb(lctx.inp_KQ_mask_cross, "KQ_mask_cross", -1);
         return lctx.inp_KQ_mask_cross;
     }
-
+//#include <iostream>
     struct ggml_cgraph * build_llama() {
         struct ggml_cgraph * gf = ggml_new_graph_custom(ctx0, model.max_nodes(), false);
-
+        //std::cerr << "Building llama..." << std::endl;
         // mutable variable, needed during the last layer of the computation to skip unused tokens
         int32_t n_tokens = this->n_tokens;
 
@@ -8427,6 +8427,7 @@ static enum ggml_status llama_graph_compute(
         auto * set_threadpool_fn = (decltype(ggml_backend_cpu_set_threadpool) *) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
         set_threadpool_fn(lctx.backend_cpu, threadpool);
     }
+    //ggml_graph_dump_dot(gf, NULL, "llama.dot");
 
     // set the number of threads for all the backends
     for (const auto & set_n_threads_fn : lctx.set_n_threads_fns) {
@@ -8583,6 +8584,7 @@ static int llama_prepare_ubatch(
 // return positive int on warning
 // return negative int on error
 //
+
 static int llama_decode_impl(
          llama_context & lctx,
            llama_batch   inp_batch) {
@@ -8671,8 +8673,9 @@ static int llama_decode_impl(
         ggml_backend_sched_alloc_graph(lctx.sched.get(), gf);
 
         llama_set_inputs(lctx, ubatch);
-
+        //std::cerr << "beg" << std::endl;
         const auto compute_status = llama_graph_compute(lctx, gf, n_threads, threadpool);
+        //std::cerr << "end" << std::endl;
         if (compute_status != GGML_STATUS_SUCCESS) {
             kv_slot_restorer.restore(kv_self);
             switch (compute_status) {
