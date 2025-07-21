@@ -13951,6 +13951,16 @@ char* ggml_op_list[] = {
 
 long long node_time_counter[1000] = {0};
 
+bool do_count_node_time_counter = false;
+
+void start_node_time_counter() {
+    do_count_node_time_counter = true;
+}
+
+void clear_node_time_counter() {
+    memset(node_time_counter, 0, sizeof(node_time_counter));
+}
+
 long long* get_node_time_counter(int* sz) {
     *sz = sizeof(node_time_counter)/sizeof(long long);
     return &node_time_counter[0];
@@ -13978,7 +13988,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         //ggml_op
         int64_t stime = ggml_time_us();
         ggml_compute_forward(&params, node);
-        atomic_fetch_add_explicit(&node_time_counter[node_n], ggml_time_us()-stime, memory_order_relaxed);
+        if (do_count_node_time_counter){
+            atomic_fetch_add_explicit(&node_time_counter[node_n], ggml_time_us()-stime, memory_order_relaxed);
+        }
         //fprintf(stderr, "Compute forward %d, node type: [%s], time taken: (%ld) us\n", node_n, ggml_op_list[node->op], );
 
         if (state->ith == 0 && cplan->abort_callback &&

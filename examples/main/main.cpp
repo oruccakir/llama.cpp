@@ -299,13 +299,18 @@ int run_mix_modal_model_with_embeddings(std::map<std::string, std::string> confi
 
 class PreloadedModel {
 
+    int context_size = 2000;
+
     llama_sampler * smpl;
     llama_model * model;
-    int n_embd, n_predict, ngl;
+    int n_embd=0, n_predict, ngl;
     const llama_vocab * vocab;
     std::string model_id, model_path;
+    llama_context * ctx;
 
 public:
+    PreloadedModel() = default;
+    PreloadedModel(int context_size) : context_size(context_size) {;}
     int load_mix_modal_model_with_embeddings(std::map<std::string, std::string> config){
         const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
         fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
@@ -349,33 +354,42 @@ public:
 
         auto sparams = llama_sampler_chain_default_params();
         sparams.no_perf = false;
-        smpl = llama_sampler_chain_init(sparams);
 
+        smpl = llama_sampler_chain_init(sparams);
         llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
   
+        llama_context_params ctx_params = llama_context_default_params();
+        ctx_params.n_ubatch = context_size;
+        ctx_params.n_ctx = context_size;
+        ctx_params.n_batch = context_size;
+        ctx_params.no_perf = false;
+
+        ctx = llama_init_from_model(model, ctx_params);
+
         return 0;
     }
 
+    void set_context_from_embeddings(const std::vector<std::string>& embd_files) {
+        int ma = 0;
+        for (auto f : embd_files) {
+            ma = std::max(ma, (int)(load_input_embeddings(f).size() / n_embd) + n_predict - 1);
+        }
+        context_size = ma;
+    }
+
     int run_model (std::string embd_file_path, std::string papi_results_save_file_path) {
-            
+
+        llama_kv_cache_clear(ctx);
+
         std::cerr << "BEGIN" << std::endl;
         std::vector<float> input_embeddings = load_input_embeddings(embd_file_path);
         
         const int n_tokens = input_embeddings.size() / n_embd;
         //std::cerr << "N_TOKENS: " << n_tokens << std::endl;
         const int n_prompt = n_tokens;
-
-
-        llama_context_params ctx_params = llama_context_default_params();
-        ctx_params.n_ubatch = n_tokens;
-        ctx_params.n_ctx = n_prompt + n_predict - 1;
-        ctx_params.n_batch = n_prompt;
-        ctx_params.no_perf = false;
-
-        llama_context * ctx = llama_init_from_model(model, ctx_params);
         
+        assert (n_tokens+n_predict-1 <= context_size), "Assertion failed, hardcoded context size of 2000 is not enough.";
 
-        
         if (ctx == NULL) {
             fprintf(stderr , "%s: error: failed to create the llama_context\n" , __func__);
             return 1;
@@ -440,15 +454,16 @@ public:
                     }
                 }
             }
-
             if (preset_event_count == 0) {
                 printf("⚠️ Nothing added.\n");
                 exit(1);
             }
 
             retval = PAPI_start(EventSet);
-            if (retval != PAPI_OK)
+            if (retval != PAPI_OK){
+                std::cerr << "HERE" << std::endl;
                 handle_error(retval);
+            }
 
             papi_start_cycles = PAPI_get_real_cyc();
             papi_start_usec = PAPI_get_real_usec();
@@ -500,8 +515,10 @@ public:
 
             std::vector<long long> values(preset_event_count + 1);
             retval = PAPI_stop(EventSet, values.data());
-            if (retval != PAPI_OK)
+            if (retval != PAPI_OK){
+                std::cerr << "HERE2" << std::endl;
                 handle_error(retval);
+            }
             for (int i = 0; i < preset_event_count; i++) {
                 char eventName[PAPI_MAX_STR_LEN];
                 PAPI_event_code_to_name(presetEventCodes[i], eventName);
@@ -532,7 +549,6 @@ public:
         llama_perf_context_print(ctx);
         fprintf(stderr, "\n");
 
-        llama_free(ctx);
 
         #ifdef ENABLE_PAPI
             save_papi_events_to_json_file(papi_results_save_file_path,values,preset_event_count,presetEventCodes,papi_end_cycles - papi_start_cycles,papi_end_usec - papi_start_usec);
@@ -542,6 +558,7 @@ public:
     }
 
     void free_memory() {
+        llama_free(ctx);
         llama_sampler_free(smpl);
         llama_model_free(model);  
     }
@@ -663,6 +680,7 @@ int main(int argc, char ** argv) {
         } else {
             PreloadedModel model;
             model.load_mix_modal_model_with_embeddings(mix_modal_modal_mode_config);
+            model.set_context_from_embeddings(embd_files);
             int n = embd_files.size();
             std::vector<int> perm(n);
             std::iota(perm.begin(), perm.end(), 0);
@@ -670,23 +688,28 @@ int main(int argc, char ** argv) {
                 std::mt19937 g(std::chrono::steady_clock::now().time_since_epoch().count());
                 std::shuffle(perm.begin(), perm.end(), g);
             }
+            start_node_time_counter();
+            int idx_cnt = 0;
             for (int i : perm) {
-                std::cerr << "-----------------------------------------------------------------" << std::endl;
-                std::cerr << "Test " << i << " of " << n << ". " << (1.0*i/n*100) << "% completed." << std::endl;
                 FILE* out = freopen(out_files[i].c_str(), "w", stdout);
                 if ((void*)out == (void*)NULL) {
                     std::cerr << "Failed opening stream to file " << out_files[i] << ". Aborting execution.";
                     exit(1);
                 }
+                clear_node_time_counter();
                 model.run_model(embd_files[i], res_paths[i]);
                 std::cerr <<  "Node time counters:";
-                /*int cnt_sz = 0;
+                int cnt_sz = 0;
                 long long* node_time_counter = get_node_time_counter(&cnt_sz);
                 for (int i = 0; i < cnt_sz; i++) {
                     std::cerr << ' ' << node_time_counter[i];
                 }
-                std::cerr << std::endl;*/
+                std::cerr << std::endl;
                 fclose(out);
+
+                idx_cnt++;
+                std::cerr << "-----------------------------------------------------------------" << std::endl;
+                std::cerr << "Test " << idx_cnt << " of " << n << ". " << (1.0*idx_cnt/n*100) << "% completed." << std::endl;
                 //std::cerr << "FINISHING SINGLE TEST" << std::endl;
                 //break;
             }

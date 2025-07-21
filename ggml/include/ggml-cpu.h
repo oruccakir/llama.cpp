@@ -1,5 +1,4 @@
 
-long long* get_node_time_counter(int* sz);
 #pragma once
 
 #include "ggml.h"
@@ -8,6 +7,11 @@ long long* get_node_time_counter(int* sz);
 #ifdef  __cplusplus
 extern "C" {
 #endif
+
+long long* get_node_time_counter(int* sz);
+void clear_node_time_counter();
+void start_node_time_counter();
+
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
     // since https://github.com/ggml-org/ggml/issues/287
