@@ -1355,7 +1355,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     struct ggml_backend_sched_split * splits = sched->splits;
 
     for (int i = 0; i < sched->n_splits; i++) {
-        std::cerr << "Split: " << i << std::endl;
+        //std::cerr << "Split: " << i << std::endl;
         struct ggml_backend_sched_split * split = &splits[i];
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
@@ -1396,9 +1396,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         if (!sched->callback_eval) {
-        std::cerr << "Compute_async_begin" << std::endl;
+        //std::cerr << "Compute_async_begin" << std::endl;
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
-        std::cerr << "Compute_async_end" << std::endl;
+        //std::cerr << "Compute_async_end" << std::endl;
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
@@ -1559,7 +1559,6 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
 
 bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
-
     ggml_backend_sched_split_graph(sched, graph);
 
 
@@ -1595,9 +1594,9 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
         std::cerr << "Sched_alloc_end" << std::endl;
     }
 
-    std::cerr << "Compute_splits_begin" << std::endl;
+    //std::cerr << "Compute_splits_begin" << std::endl;
     auto ret = ggml_backend_sched_compute_splits(sched);
-    std::cerr << "Compute_splits_end" << std::endl;
+    //std::cerr << "Compute_splits_end" << std::endl;
     return ret;
 }
 

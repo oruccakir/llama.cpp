@@ -10,7 +10,7 @@
 #include <chrono>
 #include <algorithm>
 #include <random>
-#include "ggml-cpu.h"
+
 
 #include <filesystem>
 #include <variant>
@@ -34,6 +34,25 @@ void handle_error(int retval);
 void save_papi_events_to_json_file(const std::string save_file_path,std::vector<long long> values, int preset_event_count, int *presetEventCodes, long long real_time, long long user_time);
 #endif
 
+
+bool PAPI_INIT_STATUS = false;
+void init_papi_library() {
+    if (!PAPI_INIT_STATUS){
+        int retval = PAPI_library_init(PAPI_VER_CURRENT);
+        if (retval != PAPI_VER_CURRENT)
+            handle_error(retval);
+
+        retval = PAPI_multiplex_init();
+        if (retval != PAPI_OK)
+            handle_error(retval);
+        
+        retval = PAPI_thread_init(pthread_self);
+        if (retval != PAPI_OK)
+            handle_error(retval);
+
+        PAPI_INIT_STATUS = true;
+    }
+}
 
 #ifdef ENABLE_PAPI
 void handle_error(int retval) {
@@ -71,7 +90,7 @@ std::vector<float> load_input_embeddings(const std::string& embd_file_path) {
 
     std::vector<float> embeddings(size / sizeof(float));
     file.read(reinterpret_cast<char*>(embeddings.data()), size);
-
+    file.close();
     return embeddings;
 }
 
@@ -297,6 +316,8 @@ int run_mix_modal_model_with_embeddings(std::map<std::string, std::string> confi
 }
 
 
+void copy_first_token(void);
+
 class PreloadedModel {
 
     int context_size = 2000;
@@ -309,9 +330,12 @@ class PreloadedModel {
     llama_context * ctx;
 
 public:
+    int papi_event_count = 0;
+    std::vector<std::string> papi_event_names;
+
     PreloadedModel() = default;
     PreloadedModel(int context_size) : context_size(context_size) {;}
-    int load_mix_modal_model_with_embeddings(std::map<std::string, std::string> config){
+    int load_mix_modal_model(std::map<std::string, std::string> config){
         const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
         fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
         const std::string common_data_path = repo_path.string() + "/config.json";
@@ -325,7 +349,6 @@ public:
         }
         
         n_embd                        = common_data["n_embd"];
-        std::cerr << "Nembd: " << n_embd << std::endl;
         model_id                  = config["model_id"];
         model_path = config["model_gguf_file_path"];
         n_predict = std::stoi(config["n_tokens"]);
@@ -369,19 +392,40 @@ public:
         return 0;
     }
 
-    void set_context_from_embeddings(const std::vector<std::string>& embd_files) {
+    void set_context_from_embeddings(std::map<std::string, std::string>& config, const std::vector<std::string>& embd_files) {
+
+        const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
+        fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
+        const std::string common_data_path = repo_path.string() + "/config.json";
+        json common_data;
+        std::ifstream json_file(common_data_path);
+        if (json_file.is_open()) {
+            json_file >> common_data;
+        } else {
+            fprintf(stderr, "Failed to open common data file\n");
+            return;
+        }
+        
+        n_embd                        = common_data["n_embd"];
+        std::cerr << "Nembd: " << n_embd << std::endl;
+
+        n_predict = std::stoi(config["n_tokens"]);
+
         int ma = 0;
         for (auto f : embd_files) {
-            ma = std::max(ma, (int)(load_input_embeddings(f).size() / n_embd) + n_predict - 1);
+            ma = std::max(ma, (int)load_input_embeddings(f).size());
         }
+        std::cerr << ma << ' ' << (ma/n_embd) << ' ' << n_predict << ' ' << (ma / n_embd) + n_predict + 1 << std::endl;
+        ma = (ma / n_embd) + n_predict + 1;
+        std::cerr << "Maximum tokens in query: " << ma << std::endl;
         context_size = ma;
     }
 
-    int run_model (std::string embd_file_path, std::string papi_results_save_file_path) {
+    int run_model_with_embeddings (std::string embd_file_path, std::string papi_results_save_file_path) {
 
         llama_kv_cache_clear(ctx);
 
-        std::cerr << "BEGIN" << std::endl;
+        //std::cerr << "BEGIN" << std::endl;
         std::vector<float> input_embeddings = load_input_embeddings(embd_file_path);
         
         const int n_tokens = input_embeddings.size() / n_embd;
@@ -412,7 +456,7 @@ public:
         int n_decode = 0;
         llama_token new_token_id;
 
-        std::cerr << "END" << std::endl;
+        //std::cerr << "END" << std::endl;
 
         #ifdef ENABLE_PAPI
             printf("Enable Papi profiling\n");
@@ -422,17 +466,14 @@ public:
             int presetEventCodes[PAPI_MAX_PRESET_EVENTS]; 
             long long papi_start_cycles, papi_end_cycles, papi_start_usec, papi_end_usec;
 
-            retval = PAPI_library_init(PAPI_VER_CURRENT);
-            if (retval != PAPI_VER_CURRENT)
-                handle_error(retval);
 
-            retval = PAPI_multiplex_init();
-            if (retval != PAPI_OK)
-                handle_error(retval);
+            init_papi_library();
 
+            /*
             retval = PAPI_create_eventset(&EventSet);
             if (retval != PAPI_OK)
                 handle_error(retval);
+            std::cerr << "Main Event Set: " << retval << std::endl;
 
             retval = PAPI_add_event(EventSet, PAPI_TOT_INS);
             if (retval != PAPI_OK)
@@ -467,26 +508,46 @@ public:
 
             papi_start_cycles = PAPI_get_real_cyc();
             papi_start_usec = PAPI_get_real_usec();
+            set_node_papi_count(preset_event_count + 1);
+            papi_event_count = preset_event_count+1;
+            papi_event_names = std::vector<std::string>(papi_event_count+1);
+            papi_event_names[0] = "time_us";
+            papi_event_names[1] = "PAPI_TOT_INS";
+            for (int i = 0; i < preset_event_count; i++) {
+                char eventName[PAPI_MAX_STR_LEN];
+                PAPI_event_code_to_name(presetEventCodes[i], eventName);
+                papi_event_names[i+2] = std::string(eventName);
+            }*/
         
         #endif
 
 
+        std::cerr << "Ouput: ";
+
         std :: string model_output = "";
 
+
+        int cnt_iter = 0;
         for (int n_pos = 0; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
-            std::cerr << "N_POS: " << n_pos << std::endl;
+            //std::cerr << "N_POS: " << n_pos << std::endl;
             if (llama_decode(ctx, batch)) {
                 fprintf(stderr, "%s : failed to eval, return code %d\n", __func__, 1);
                 return 1;
             }
 
-            std::cerr << "N_TOKENS " << batch.n_tokens << std::endl;
+            //std::cerr << "N_TOKENS " << batch.n_tokens << std::endl;
             n_pos += batch.n_tokens;
 
             {
                 new_token_id = llama_sampler_sample(smpl, ctx, -1);
-                std::cerr << "TOK_ID " << new_token_id << std::endl;
+                if (cnt_iter == 0) {
+                    copy_first_token();
+                }
+                //std::cerr << "TOK_ID " << new_token_id << std::endl;
                 if (llama_vocab_is_eog(vocab, new_token_id)) {
+                    break;
+                } else if (llama_vocab_is_control(vocab, new_token_id)) {
+                    std::cerr << "\nControl detected. Token id: " << new_token_id << ". Finalizing generation." << std::endl;
                     break;
                 }
 
@@ -497,7 +558,7 @@ public:
                     return 1;
                 }
                 std::string s(buf, n);
-                std::cerr << "s: " << s << std::endl;
+                std::cerr << s;
                 model_output += s.c_str();
                 //printf("%s", s.c_str());
                 fflush(stdout);
@@ -506,17 +567,24 @@ public:
 
                 n_decode += 1;
             }
+
+            cnt_iter++;
         }
 
-        #ifdef ENABLE_PAPI
+        std::cerr << std::endl;
 
-            papi_end_cycles = PAPI_get_real_cyc();
+        //std::cerr << "HERE" << std::endl;
+
+        #ifdef ENABLE_PAPI
+            /*papi_end_cycles = PAPI_get_real_cyc();
             papi_end_usec = PAPI_get_real_usec();
 
+                    std::cerr << "HERE1" << std::endl;
             std::vector<long long> values(preset_event_count + 1);
-            retval = PAPI_stop(EventSet, values.data());
+            retval = PAPI_stop(EventSet, values.data());        std::cerr << "HERE2" << std::endl;
+
             if (retval != PAPI_OK){
-                std::cerr << "HERE2" << std::endl;
+                std::cerr << "HERE3" << std::endl;
                 handle_error(retval);
             }
             for (int i = 0; i < preset_event_count; i++) {
@@ -524,7 +592,13 @@ public:
                 PAPI_event_code_to_name(presetEventCodes[i], eventName);
             }
 
-            printf("\n\033[0;32mPAPI Profiling Completed!\n\033[0m");
+            if ( ( retval = PAPI_cleanup_eventset( EventSet ) ) != PAPI_OK )	{
+                PAPI_perror("14026");exit(0);}
+
+            if ( ( retval = PAPI_destroy_eventset( &EventSet) ) != PAPI_OK ){
+                PAPI_perror("14029");exit(0);}
+
+            printf("\n\033[0;32mPAPI Profiling Completed!\n\033[0m");*/
         #endif
 
         const auto t_main_end = ggml_time_us();
@@ -551,7 +625,7 @@ public:
 
 
         #ifdef ENABLE_PAPI
-            save_papi_events_to_json_file(papi_results_save_file_path,values,preset_event_count,presetEventCodes,papi_end_cycles - papi_start_cycles,papi_end_usec - papi_start_usec);
+            //save_papi_events_to_json_file(papi_results_save_file_path,values,preset_event_count,presetEventCodes,papi_end_cycles - papi_start_cycles,papi_end_usec - papi_start_usec);
         #endif
 
         return 0;
@@ -577,7 +651,292 @@ void print_help(){
     printf("  -papi_res_dir <path>     Path to save PAPI profiling results\n");
 }
 
+bool count_nodes = false;
+bool store_papi_results = true;
+bool matrix_statistics = false;
+bool profile_first_token = true;
+std::vector<int> papi_metric_ids;
 
+void set_custom_papi_metrics(const std::vector<std::string>& metrics) {
+    init_papi_library();
+    for (auto metric : metrics) {
+        int mtr = 0;
+        int retval = PAPI_event_name_to_code(metric.data(), &mtr);
+        if (retval != PAPI_OK) {
+            std::cerr << "Unable to add event " << metric << ". Error when trying to get code from name." << std::endl;
+            continue;
+        }
+        retval = PAPI_query_event(mtr);
+        if (retval != PAPI_OK) {
+            std::cerr << "Unable to add event " << metric << ". Query event didn't return ok." << std::endl;
+            continue;
+        }
+        papi_metric_ids.push_back(mtr);
+    }
+}
+
+void output_stream_matrix_stats(std::ostream& out) {
+    /** Matrix statistics:
+     *      Zero ratio
+     *      Zero count
+     *      Element count
+     */
+    if (!matrix_statistics) return;
+    out.precision(10);
+    int layer_cnt_zr, layer_cnt_zc, layer_cnt_ec;
+    layer_cnt_zr = layer_cnt_zc = layer_cnt_ec = 0;
+    float* zratio_arr = get_node_zero_ratio_array(&layer_cnt_zr);
+    int64_t* zcount_arr = get_node_zero_count_arr(&layer_cnt_zc);
+    int64_t* ecount_arr = get_node_element_count_arr(&layer_cnt_ec);
+    out << "ZRatio " << layer_cnt_zr;
+    for (int i = 0; i < layer_cnt_zr; i++)
+        out << ' ' << zratio_arr[i];
+    out << std::endl;
+    out << "ZCount " << layer_cnt_zc;
+    for (int i = 0; i < layer_cnt_zc; i++)
+        out << ' ' << zcount_arr[i];
+    out << std::endl;
+    out << "ECount " << layer_cnt_ec;
+    for (int i = 0; i < layer_cnt_ec; i++)
+        out << ' ' << ecount_arr[i];
+    out << std::endl;
+}
+
+std::vector<long long> first_token_counters;
+void copy_first_token() {
+    if (!profile_first_token) return;
+    int cnt_sz = 0, papi_cnt=0, num_th=0;
+    long long* node_time_counter = get_node_time_counter(&cnt_sz, &papi_cnt, &num_th);
+    //std::cerr << "3 things " << cnt_sz << ' ' << papi_cnt << ' ' << num_th << std::endl;
+    first_token_counters = std::vector<long long>(cnt_sz*papi_cnt*num_th);
+    for (int i = 0; i < first_token_counters.size(); i++){
+        first_token_counters[i] = node_time_counter[i];
+        //std::cerr << first_token_counters[i] << ' ';
+        assert(first_token_counters[i] >= 0);
+    }
+    //std::cerr << std::endl;
+    /*int name_num, str_sz;
+    char* layer_names = get_layer_names(&name_num, &str_sz);
+    for (int i = 0; i < name_num; i++)
+        std::cerr << &layer_names[i*str_sz] << ' ';
+    std::cerr << std::endl;*/
+    //memcpy(first_token_counters.data(), node_time_counter, cnt_sz*papi_cnt*num_th*sizeof(long long));
+}
+
+void add_first_token_counters(json& dict) {
+    if (!profile_first_token) return;
+    /*for (int i = 0; i < first_token_counters.size(); i++){
+        std::cerr << first_token_counters[i] << ' ';
+        assert(first_token_counters[i] >= 0);
+    }
+    std::cerr << std::endl;*/
+    std::vector<std::string> lnames, enames;
+    int cnt_sz = 0, papi_cnt=0, num_th=0;
+    get_node_time_counter(&cnt_sz, &papi_cnt, &num_th);
+    //std::cerr << "3 things " << cnt_sz << ' ' << papi_cnt << ' ' << num_th << std::endl;
+    //assert(papi_cnt == model.papi_event_count);
+    int name_num, str_sz;
+    char* layer_names = get_layer_names(&name_num, &str_sz);
+    /*for (int i = 0; i < name_num; i++)
+        std::cerr << &layer_names[i*str_sz] << ' ';
+    std::cerr << std::endl;*/
+    for (int i = 0; i < name_num; i++)
+        lnames.push_back(std::string(&layer_names[i*str_sz]));
+    char* event_names = get_papi_events(&name_num, &str_sz);
+    enames.push_back(std::string("time_us"));
+    for (int i = 0; i < name_num; i++)
+        enames.push_back(std::string(&event_names[i*str_sz]));
+    std::vector<std::vector<std::vector<long long>>> res(cnt_sz, std::vector<std::vector<long long>>(papi_cnt, std::vector<long long>(num_th)));
+    for (int i = 0; i < cnt_sz; i++)
+        for (int j = 0; j < papi_cnt; j++)
+            for (int k = 0; k < num_th; k++){
+                res[i][j][k] = first_token_counters[i*papi_cnt*num_th+j*num_th+k];
+                assert(0 <= i*papi_cnt*num_th+j*num_th+k && i*papi_cnt*num_th+j*num_th+k < first_token_counters.size());
+                assert(first_token_counters[i*papi_cnt*num_th+j*num_th+k] >= 0);
+                assert(res[i][j][k] >= 0);
+            }
+    if (count_nodes)
+        dict["layer_num"] = cnt_sz;
+    dict["thread_num"] = num_th;
+    if (!dict.contains("events")) {
+        dict["events"] = json::object();
+    } else {
+        //std::cerr << dict["events"].dump(4) << std::endl;
+    }
+    PAPI_event_info_t preset_event_info;
+    for (auto s : enames) {
+        int code = 0;
+        PAPI_event_name_to_code(s.data(), &code);
+        PAPI_get_event_info(code, &preset_event_info);
+        dict["events"][s] = preset_event_info.long_descr;
+    }
+    dict["events"]["time_us"] = "Sum of the times taken by all threads to do tensor operations.";    
+    dict["attr_num"] = dict["events"].size();
+    //std::cerr << dict["events"].dump(4) << std::endl;
+    for (int i = 0; i < enames.size(); i++) {
+        std::vector<long long> su(num_th);
+        for (int t = 0; t < num_th; t++) {
+            for (int l = 0; l < lnames.size(); l++) {
+                su[t] += res[l][i][t];
+            }
+        }
+        long long tsu = 0;
+        for (long long x : su)
+            tsu += x;
+        //std::cerr << enames[i] << ' ' << tsu << std::endl;
+        if (!(tsu >= 0 && tsu <= 100000000000ll)) std::cout << "Should crash" << std::endl;
+        assert(tsu >= 0 && tsu <= 100000000000ll);
+        //if (!dict.contains(enames[i]) || !count_nodes){
+        dict[enames[i]] = tsu;
+        //}
+        //if (!dict.contains(enames[i]+"_th") || !count_nodes){
+        dict[enames[i]+"_th"] = su; 
+        //}
+    }
+    if (count_nodes) {
+        dict["layers"] = lnames;
+        if (!dict.contains("prof_layers")) {
+            dict["prof_layers"] = json::array();
+        }
+        for (int l = 0; l < lnames.size(); l++) {
+            if (dict["prof_layers"].size() <= l)
+                dict["prof_layers"].push_back(json::object());
+        }
+        for (int l = 0; l < lnames.size(); l++) {
+            for (int e = 0; e < enames.size(); e++) {
+                std::vector<int64_t> thv(num_th);
+                int64_t su = 0;
+                for (int t = 0; t < num_th; t++) {
+                    thv[t] = res[l][e][t];
+                    su += thv[t];
+                }
+                assert(su >= 0);
+                dict["prof_layers"][l][enames[e]] = su;
+                assert(dict["prof_layers"][l][enames[e]] >= 0);
+                dict["prof_layers"][l][enames[e]+"_th"] = thv;
+            }
+        }
+        /*for (int i = 0; i < dict["layer_num"]; i++) {
+            assert(dict["prof_layers"][i]["PAPI_TOT_CYC"] >= 0);
+        }*/
+    }
+}
+
+void add_node_counters(json& dict) {
+    std::cerr << "Storing node counters..." << std::endl;
+    std::vector<std::string> lnames, enames;
+    int cnt_sz = 0, papi_cnt=0, num_th=0;
+    long long* node_time_counter = get_node_time_counter(&cnt_sz, &papi_cnt, &num_th);
+    //assert(papi_cnt == model.papi_event_count);
+    int name_num, str_sz;
+    char* layer_names = get_layer_names(&name_num, &str_sz);
+    for (int i = 0; i < name_num; i++)
+        lnames.push_back(std::string(&layer_names[i*str_sz]));
+    char* event_names = get_papi_events(&name_num, &str_sz);
+    enames.push_back(std::string("time_us"));
+    for (int i = 0; i < name_num; i++)
+        enames.push_back(std::string(&event_names[i*str_sz]));
+    std::vector<std::vector<std::vector<long long>>> res(cnt_sz, std::vector<std::vector<long long>>(papi_cnt, std::vector<long long>(num_th)));
+    for (int i = 0; i < cnt_sz; i++)
+        for (int j = 0; j < papi_cnt; j++)
+            for (int k = 0; k < num_th; k++){
+                res[i][j][k] = node_time_counter[i*papi_cnt*num_th+j*num_th+k];
+                assert(node_time_counter[i*papi_cnt*num_th+j*num_th+k] >= 0);
+                assert(res[i][j][k] >= 0);
+            }
+    if (count_nodes)
+        dict["layer_num"] = cnt_sz;
+    dict["thread_num"] = num_th;
+    if (!dict.contains("events")) {
+        dict["events"] = json::object();
+    } else {
+        //std::cerr << dict["events"].dump(4) << std::endl;
+    }
+    PAPI_event_info_t preset_event_info;
+    for (auto s : enames) {
+        int code = 0;
+        PAPI_event_name_to_code(s.data(), &code);
+        PAPI_get_event_info(code, &preset_event_info);
+        dict["events"][s] = preset_event_info.long_descr;
+    }
+    dict["events"]["time_us"] = "Sum of the times taken by all threads to do tensor operations.";    
+    dict["attr_num"] = dict["events"].size();
+    //std::cerr << dict["events"].dump(4) << std::endl;
+    for (int i = 0; i < enames.size(); i++) {
+        std::vector<long long> su(num_th);
+        for (int t = 0; t < num_th; t++) {
+            for (int l = 0; l < lnames.size(); l++) {
+                su[t] += res[l][i][t];
+            }
+        }
+        long long tsu = 0;
+        for (long long x : su)
+            tsu += x;
+        //if (!dict.contains(enames[i]) || !count_nodes){
+        dict[enames[i]] = tsu;
+        //}
+        //if (!dict.contains(enames[i]+"_th") || !count_nodes){
+        dict[enames[i]+"_th"] = su; 
+        //}
+    }
+    if (count_nodes) {
+        dict["layers"] = lnames;
+        if (!dict.contains("prof_layers")) {
+            dict["prof_layers"] = json::array();
+        }
+        for (int l = 0; l < lnames.size(); l++) {
+            if (dict["prof_layers"].size() <= l)
+                dict["prof_layers"].push_back(json::object());
+        }
+        for (int l = 0; l < lnames.size(); l++) {
+            for (int e = 0; e < enames.size(); e++) {
+                std::vector<int64_t> thv(num_th);
+                int64_t su = 0;
+                for (int t = 0; t < num_th; t++) {
+                    thv[t] = res[l][e][t];
+                    su += thv[t];
+                }
+                assert(su >= 0);
+                dict["prof_layers"][l][enames[e]] = su;
+                assert(dict["prof_layers"][l][enames[e]] >= 0);
+                dict["prof_layers"][l][enames[e]+"_th"] = thv;
+            }
+        }
+        assert(dict["layer_num"] >= lnames.size());
+        /*for (int i = 0; i < lnames.size(); i++) {
+            if (dict["prof_layers"][i]["PAPI_TOT_CYC"] < 0) {
+                std::cerr << i << ' ' << dict["prof_layers"][i]["PAPI_TOT_CYC"] << std::endl;
+            }
+            assert(dict["prof_layers"][i]["PAPI_TOT_CYC"] >= 0);
+        }*/
+    }
+    if (profile_first_token) {
+        json first_tk;
+        if (dict.contains("first_token"))
+            first_tk = dict["first_token"];
+        add_first_token_counters(first_tk);
+        dict["first_token"] = first_tk;
+    }
+}
+
+void output_node_counters(std::string file) {
+    if (!store_papi_results) return;
+    json dict;
+    std::cerr << "Opening file " << file << std::endl;
+    if (std::filesystem::exists(file)) {
+        std::ifstream fin(file);
+        dict = json::parse(fin);
+        //std::cerr << "Dict:\n" << dict.dump(4) << std::endl;
+        fin.close();
+    } else {
+        std::cerr << "File doesn't exist. Creating it..." << std::endl;
+    }
+    std::ofstream fout(file);
+    add_node_counters(dict);
+    fout << dict.dump(4);
+    fout.close();
+    std::cerr << "Done." << std::endl;
+}
 
 
 int main(int argc, char ** argv) {
@@ -586,7 +945,9 @@ int main(int argc, char ** argv) {
     std::vector<std::string> embd_files, res_paths, out_files;
     bool multi_input = false;
     bool multi_input_shuffle = true;
-    for(int i=1; i<argc; i++){
+    bool set_metrics = false;
+    std::vector<std::string> papi_metrics;
+    for(int i=1; i<argc; i++) {
         if(strcmp(argv[i],"--help")==0){
             printf("Usage: %s [options]\n", argv[0]);
             print_help();
@@ -649,22 +1010,54 @@ int main(int argc, char ** argv) {
             }
         } else if (strcmp(argv[i],"-multi_input")==0) {
             multi_input = true;
-            int n = atoi(argv[++i]);
+            if (argc <= ++i) {
+                print_help();
+                return 1;
+            }
+            int n = atoi(argv[i]);
             embd_files = std::vector<std::string>(n);
             res_paths  = std::vector<std::string>(n);
             out_files  = std::vector<std::string>(n);
             for (int j = 0; j < n; j++) {
+                if (argc <= i+3) {
+                    print_help();
+                    return 1;
+                }
                 embd_files[j] = argv[++i];
                 res_paths[j] = argv[++i];
                 out_files[j] = argv[++i];
             }
         } else if (strcmp(argv[i],"-multi_input_no_shuffle")==0) {
             if (strcmp(argv[++i], "true") == 0) multi_input_shuffle = false;
+        } else if (strcmp(argv[i], "-node_level_statistics")==0) {
+            count_nodes = true;
+        } else if (strcmp(argv[i], "-specify_papi_metrics")==0) {
+            set_metrics = true;
+            if (argc <= ++i) {
+                print_help();
+                return 1;
+            }
+            int num_metrics = atoi(argv[i]);
+            papi_metrics = std::vector<std::string>(num_metrics);
+            for (int j = 0; j < num_metrics; j++) {
+                if (argc <= ++i) {
+                    print_help();
+                    return 1;
+                }
+                papi_metrics[j] = std::string(argv[i]);
+            }
+        } else if (strcmp(argv[i], "-calc_matrix_stats")==0) {
+            store_papi_results = false;
+            matrix_statistics = true;
         }
         else{
             print_help();
             return 1;
         }
+    }
+
+    if (set_metrics) {
+        set_custom_papi_metrics(papi_metrics);
     }
 
     mix_modal_modal_mode_config["model_gguf_file_path"]=model_gguf_file_path;
@@ -679,8 +1072,8 @@ int main(int argc, char ** argv) {
             run_mix_modal_model_with_embeddings(mix_modal_modal_mode_config);
         } else {
             PreloadedModel model;
-            model.load_mix_modal_model_with_embeddings(mix_modal_modal_mode_config);
-            model.set_context_from_embeddings(embd_files);
+            model.set_context_from_embeddings(mix_modal_modal_mode_config, embd_files);
+            model.load_mix_modal_model(mix_modal_modal_mode_config);
             int n = embd_files.size();
             std::vector<int> perm(n);
             std::iota(perm.begin(), perm.end(), 0);
@@ -688,30 +1081,54 @@ int main(int argc, char ** argv) {
                 std::mt19937 g(std::chrono::steady_clock::now().time_since_epoch().count());
                 std::shuffle(perm.begin(), perm.end(), g);
             }
-            start_node_time_counter();
+            set_node_main_thread_id(pthread_self());
+            if (count_nodes){
+                start_node_time_counter();
+            }
+            int num_runs = 1;
+            int num_hw_cnts = PAPI_num_cmp_hwctrs(0);
+            if (set_metrics && count_nodes) {
+                num_runs = (papi_metric_ids.size()+num_hw_cnts-1)/num_hw_cnts;
+                n *= num_runs;
+            }
             int idx_cnt = 0;
-            for (int i : perm) {
-                FILE* out = freopen(out_files[i].c_str(), "w", stdout);
-                if ((void*)out == (void*)NULL) {
-                    std::cerr << "Failed opening stream to file " << out_files[i] << ". Aborting execution.";
-                    exit(1);
+            for (int run = 0; run < num_runs; run++){
+                if (set_metrics) {
+                    int maxev = 0;
+                    int* id_arr = get_papi_event_codes(&maxev);
+                    if (count_nodes) {
+                        int str = run*num_hw_cnts;
+                        int end = std::min((run+1)*num_hw_cnts, (int) papi_metric_ids.size());
+                        memcpy(id_arr, papi_metric_ids.data()+sizeof(int)*str, sizeof(int)*(end-str));
+                    } else {
+                        if (papi_metric_ids.size() > maxev) {
+                            std::cerr << "The number of papi events to count should be <= " << maxev << std::endl;
+                            return 1;
+                        }
+                        memcpy(id_arr, papi_metric_ids.data(), papi_metric_ids.size()*sizeof(int));
+                    }
                 }
-                clear_node_time_counter();
-                model.run_model(embd_files[i], res_paths[i]);
-                std::cerr <<  "Node time counters:";
-                int cnt_sz = 0;
-                long long* node_time_counter = get_node_time_counter(&cnt_sz);
-                for (int i = 0; i < cnt_sz; i++) {
-                    std::cerr << ' ' << node_time_counter[i];
-                }
-                std::cerr << std::endl;
-                fclose(out);
+                for (int i : perm) {
+                    FILE* out = freopen(out_files[i].c_str(), "w", stdout);
+                    if ((void*)out == (void*)NULL) {
+                        std::cerr << "Failed opening stream to file " << out_files[i] << ". Aborting execution.";
+                        exit(1);
+                    }
+                    clear_node_time_counter();
+                    if (matrix_statistics)
+                        set_node_matrix_statistics(true);
+                    model.run_model_with_embeddings(embd_files[i], res_paths[i]);
+                    //std::cerr << "HERE" << std::endl;
+                    output_node_counters(res_paths[i]);
+                    output_stream_matrix_stats(std::cout);
+                    fclose(out);
 
-                idx_cnt++;
-                std::cerr << "-----------------------------------------------------------------" << std::endl;
-                std::cerr << "Test " << idx_cnt << " of " << n << ". " << (1.0*idx_cnt/n*100) << "% completed." << std::endl;
-                //std::cerr << "FINISHING SINGLE TEST" << std::endl;
-                //break;
+                    idx_cnt++;
+                    std::cerr << "-----------------------------------------------------------------" << std::endl;
+                    std::cerr << "Test " << idx_cnt << " of " << n << ". " << (1.0*idx_cnt/n*100) << "% completed." << std::endl;
+                    //std::cerr << "FINISHING SINGLE TEST" << std::endl;
+                    //break;
+                }
             }
             model.free_memory();
         }

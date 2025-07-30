@@ -8146,6 +8146,8 @@ static struct ggml_cgraph * llama_build_graph_k_shift(llama_context & lctx) {
     return result;
 }
 
+
+#include <iostream>
 static struct ggml_cgraph * llama_build_graph(
          llama_context & lctx,
     const llama_ubatch & ubatch,
@@ -8189,7 +8191,6 @@ static struct ggml_cgraph * llama_build_graph(
     struct llm_build_context llm(lctx, ubatch, cb, worst_case);
 
     llm.init();
-
     switch (model.arch) {
         case LLM_ARCH_LLAMA:
         case LLM_ARCH_MINICPM:

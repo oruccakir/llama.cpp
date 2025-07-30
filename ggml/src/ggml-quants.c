@@ -254,7 +254,7 @@ void quantize_row_q8_1_ref(const float * restrict x, block_q8_1 * restrict y, in
 
 void dequantize_row_q4_0(const block_q4_0 * restrict x, float * restrict y, int64_t k) {
     static const int qk = QK4_0;
-
+    
     assert(k % qk == 0);
 
     const int nb = k / qk;

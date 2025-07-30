@@ -259,6 +259,7 @@ if (ENABLE_PAPI)
     endif()
 
     target_link_libraries(llama-cli PRIVATE papi)
+    target_link_libraries(ggml-cpu PRIVATE papi)
     message(STATUS "PAPI profiling support is enabled")
     target_compile_definitions(llama-cli PRIVATE ENABLE_PAPI)
 endif()

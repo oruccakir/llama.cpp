@@ -11,6 +11,8 @@
 #include "ggml-threading.h"
 #include "ggml.h"
 
+#include <papi.h>
+
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -13949,24 +13951,252 @@ char* ggml_op_list[] = {
     };
 
 
-long long node_time_counter[1000] = {0};
+int node_time_counter_sz = 0;
+int true_node_count = 0;
+int node_papi_ev_cnt = 0;
+int node_thread_count = 0;
+int node_papi_count = 0;
+long long node_time_counter[1<<20] = {0};           // Should be gigger than node_cnt * papi_events * num_threads
+                                                    // Currently set to 1 million elements, 8MB.
+float   node_zero_ratio_counter[1<<12] = {0.0f};    // Should be bigger than node_count, currently 4 thousand elements, 16KB.
+int64_t node_zero_elem_counter[1<<12] = {0};        // Should be bigger than node_count, currently 4 thousand elements, 32KB.
+int64_t node_elem_counter[1<<12] = {0};             // Should be bigger than node_count, currently 4 thousand elements, 32KB.
+unsigned long node_main_thread_id = 0;
 
 bool do_count_node_time_counter = false;
+bool init_node_counter = true;
+bool do_get_matrix_statistics = false;
+
+float* get_node_zero_ratio_array(int* layer_cnt) {
+    *layer_cnt = true_node_count;
+    return node_zero_ratio_counter;
+}
+
+int64_t* get_node_zero_count_arr(int* layer_cnt) {
+    *layer_cnt = true_node_count;
+    return node_zero_elem_counter;
+}
+
+int64_t* get_node_element_count_arr(int* layer_cnt) {
+    *layer_cnt = true_node_count;
+    return node_elem_counter;
+}
+
+void set_node_matrix_statistics(bool val) {
+    do_get_matrix_statistics = val;
+}
 
 void start_node_time_counter() {
     do_count_node_time_counter = true;
 }
 
-void clear_node_time_counter() {
-    memset(node_time_counter, 0, sizeof(node_time_counter));
+void set_node_papi_count(int cnt) {
+    node_papi_count = cnt;
 }
 
-long long* get_node_time_counter(int* sz) {
-    *sz = sizeof(node_time_counter)/sizeof(long long);
-    return &node_time_counter[0];
+void clear_node_time_counter() {
+    memset(node_time_counter, 0, sizeof(node_time_counter));
+    memset(node_zero_elem_counter, 0, sizeof(node_zero_elem_counter));
+    memset(node_elem_counter, 0, sizeof(node_elem_counter));
+}
+
+void set_node_main_thread_id(unsigned long tid) {
+    node_main_thread_id = tid;
+}
+
+long long* get_node_time_counter(int* sz, int* papi_cnt, int* nth) {
+    *sz = node_time_counter_sz;
+    *papi_cnt = node_papi_ev_cnt+1;
+    *nth = node_thread_count;
+    for (int i = 0; i < node_time_counter_sz*(node_papi_ev_cnt+1)*node_thread_count; i++)
+        assert(node_time_counter[i] >= 0);
+    return node_time_counter;
+}
+
+void papi_node_fetch(int EventSet, long long* arr) {
+    PAPI_read(EventSet, arr);
+}
+
+void papi_node_start(int EventSet) {
+   PAPI_reset(EventSet);
+}
+
+void papi_node_end(int EventSet, int node_n, int ith, int nth) {
+    long long val[30] = {0};
+    papi_node_fetch(EventSet, val);
+    for (int i = 0; i < node_papi_ev_cnt; i++) {
+        //fprintf(stderr, "%d %d %s %lld %lld %lld\n", node_n, i, "[code]", prv[i], val[i], val[i]-prv[i]);
+        assert(val[i] >= 0);
+        node_time_counter[node_n*(node_papi_ev_cnt+1)*nth+(i+1)*nth+ith] += val[i];
+    }
+}
+
+int node_papi_event_codes[30] = {0};
+char node_papi_events[30*PAPI_MAX_STR_LEN];
+char node_layer_names[1000*40];
+
+char* get_papi_events(int* n, int* m) {
+    *n = node_papi_ev_cnt;
+    *m = PAPI_MAX_STR_LEN;
+    return node_papi_events;
+}
+
+int* get_papi_event_codes(int* maxn) {
+    *maxn = 30;
+    return node_papi_event_codes;
+}
+
+char* get_layer_names(int* n, int* m) {
+    *n = node_time_counter_sz;
+    *m = 40;
+    return &0[node_layer_names]; // Why not?
+}
+
+bool node_is_main_thread() {
+    return pthread_self() == node_main_thread_id;
+}
+
+void init_event_names(int EventSet) {
+    int evs[50];
+    int len=50;
+    PAPI_list_events(EventSet, &evs[0], &len);
+    node_papi_ev_cnt = len;
+    for (int i = 0; i < node_papi_ev_cnt; i++){
+        PAPI_event_code_to_name(evs[i], &node_papi_events[i*PAPI_MAX_STR_LEN]);
+        //node_papi_event_codes[i] = evs[i];
+    }
+}
+
+void create_event_set(int* EventSet) {
+    PAPI_register_thread();
+
+    *EventSet = PAPI_NULL;
+    int retval = PAPI_create_eventset(EventSet);
+    if (retval != PAPI_OK){
+        PAPI_perror("create");exit(0);}
+
+    int ev_cnt = 0;
+
+    if (do_count_node_time_counter){
+        for (int i = 0; i < 30; i++) {
+            if ((node_papi_event_codes[i] != 0) && (PAPI_query_event(node_papi_event_codes[i]) == PAPI_OK)) {
+                retval = PAPI_add_event(*EventSet, node_papi_event_codes[i]);
+                if (retval != PAPI_OK){
+                    //char name[30], err[100];
+                    //PAPI_event_code_to_name(preset_event, name);
+                    //sprintf(err, "add %s", name);
+                    //PAPI_perror(err);
+                    //exit(0);
+                } else {
+                    ev_cnt++;
+                }
+            }
+        }
+    } else {
+        retval = PAPI_add_event(*EventSet, PAPI_TOT_INS);
+        if (retval != PAPI_OK) {
+            PAPI_perror("papi add tot ins");
+            exit(0);
+        }
+
+        retval = PAPI_set_multiplex(*EventSet);
+        if (retval != PAPI_OK) {
+            PAPI_perror("papi set multiplex");
+            exit(0);
+        }
+    }
+
+    for (int i = 0; i < PAPI_MAX_PRESET_EVENTS; i++) {
+        int preset_event = PAPI_PRESET_MASK | i;
+        if ((PAPI_query_event(preset_event) == PAPI_OK) && (do_count_node_time_counter || preset_event != PAPI_TOT_INS)) {
+            retval = PAPI_add_event(*EventSet, preset_event);
+            /*if (node_is_main_thread()){
+            char name[PAPI_MAX_STR_LEN];
+            PAPI_event_code_to_name(preset_event, name);
+            fprintf(stderr, "Preset event name %d: %s\n", ev_cnt+1, name);}*/
+            if (retval != PAPI_OK){
+                //char name[30], err[100];
+                //PAPI_event_code_to_name(preset_event, name);
+                //sprintf(err, "add %s", name);
+                //PAPI_perror(err);
+                //exit(0);
+            } else {
+                ev_cnt++;
+            }
+        }
+    }
+
+    //fprintf(stderr, "Num of events succesfully added: %d\n", ev_cnt);
+    //fprintf(stderr, "node_papi_ev_cnt: %d\n", ev_cnt);
+    //node_papi_ev_cnt = ev_cnt;
+    int status=-1;
+    //PAPI_state(*EventSet, &status);
+    //fprintf(stderr, "%d %d\n", status, *EventSet);
+    retval = PAPI_start(*EventSet);
+    if (retval != PAPI_OK){
+            fprintf(stderr, "Err: %d\n", *EventSet);
+
+        PAPI_perror("start");
+    }    
+    //PAPI_state(*EventSet, &status);
+    //fprintf(stderr, "%d %d\n", status, *EventSet);
+
+    init_event_names(*EventSet);
+
+}
+
+void destroy_event_set(int* EventSet) {
+    int retval = PAPI_stop(*EventSet, NULL);
+    if (retval != PAPI_OK){
+            fprintf(stderr, "Err: %d\n", *EventSet);
+        PAPI_perror("stop");}
+    if ( ( retval = PAPI_cleanup_eventset( *EventSet ) ) != PAPI_OK )	{
+        PAPI_perror("cleanup");exit(0);}
+
+	if ( ( retval = PAPI_destroy_eventset( EventSet) ) != PAPI_OK ){
+        PAPI_perror("destroy");exit(0);}
+    if (node_main_thread_id != pthread_self())
+        PAPI_unregister_thread();
+}
+
+void init_node_counter_f() {
+    if (!init_node_counter) return;
+    init_node_counter = false;
+
+}
+
+#define NODE_MAT_BUFFSZ 1ll<<25
+float collect_matrix_statistics_buff[NODE_MAT_BUFFSZ] = {0};  // Should be bigger than biggest output matrix in graph.
+                                                              // Currently set to ~33 million, 134MB.
+
+void collect_matrix_statistics(int node_n, struct ggml_compute_params* params, struct ggml_tensor* node) {
+    float* buff = NULL;
+    int64_t matsz = ggml_nelements(node);
+    if (node->type == GGML_TYPE_F32){
+        buff = (float*) node->data;
+    } else {
+        ggml_to_float_t const dequantisizer = ggml_get_type_traits(node->type)->to_float;
+        buff = collect_matrix_statistics_buff; 
+        if (matsz > NODE_MAT_BUFFSZ) {
+            fprintf(stderr, "We're so cooked, buffer has size %ld but node output tensor has size %ld.\n", NODE_MAT_BUFFSZ, matsz);
+            exit(1);
+        }
+        dequantisizer(node->data, buff, matsz);
+    }
+    int64_t numz = node_zero_elem_counter[node_n];
+    for (int i = 0; i < matsz; i++)
+        if (-1e-5f <= buff[i] && buff[i] <= 1e-5f)
+            numz++;
+    matsz += node_elem_counter[node_n];
+    node_zero_ratio_counter[node_n] = ((float)numz)/matsz;
+    node_zero_elem_counter[node_n] = numz;  
+    node_elem_counter[node_n] = matsz; 
 }
 
 static thread_ret_t ggml_graph_compute_thread(void * data) {
+
+    int thread_papi_event_set=0;
+
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
     struct ggml_threadpool    * tp    = state->threadpool;
 
@@ -13983,14 +14213,60 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.threadpool=*/ tp,
     };
 
+    //fprintf(stderr, "Main thread: %ld, this thread: %ld, is main: %d", node_main_thread_id, pthread_self(), node_main_thread_id == pthread_self());
+
+    //fprintf(stderr, " %d", cgraph->n_nodes);
+
+    true_node_count = cgraph->n_nodes;
+    if (cgraph->nodes[0]->op == GGML_OP_GET_ROWS)
+        true_node_count--;
+    if (do_count_node_time_counter){
+        atomic_store_explicit(&node_time_counter_sz, true_node_count, memory_order_relaxed);
+    } else {
+        atomic_store_explicit(&node_time_counter_sz, 1, memory_order_relaxed);
+    }
+
+    //fprintf(stderr, "Thread registed.");
+    create_event_set(&thread_papi_event_set);
+
+    if (init_node_counter) {
+        node_thread_count = state->threadpool->n_threads_max;
+
+    }
+
+    int64_t time;
+    if (!do_count_node_time_counter) {
+        papi_node_start(thread_papi_event_set);
+        time = ggml_time_us();
+    }
+    
+    if (init_node_counter && !do_count_node_time_counter) {
+        strcpy(&node_layer_names[0], "LAYER_SUMARIZATION");
+    }
+
+    int true_node_n = -1;
     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
         struct ggml_tensor * node = cgraph->nodes[node_n];
-        //ggml_op
-        int64_t stime = ggml_time_us();
+        true_node_n++;
+        if (node_n == 0 && node->op == GGML_OP_GET_ROWS) {
+            true_node_n--;
+        }
+
+        if (init_node_counter && node_is_main_thread() && do_count_node_time_counter) {
+            strcpy(&node_layer_names[true_node_n*40], ggml_op_list[node->op]);
+        }
+
+        if (do_count_node_time_counter) {
+            papi_node_start(thread_papi_event_set);
+            time = ggml_time_us();
+        }
         ggml_compute_forward(&params, node);
         if (do_count_node_time_counter){
-            atomic_fetch_add_explicit(&node_time_counter[node_n], ggml_time_us()-stime, memory_order_relaxed);
+            time = ggml_time_us()-time;
+            papi_node_end(thread_papi_event_set, true_node_n, params.ith, node_thread_count);
+            node_time_counter[true_node_n*(node_papi_ev_cnt+1)*node_thread_count+params.ith] += time;
         }
+
         //fprintf(stderr, "Compute forward %d, node type: [%s], time taken: (%ld) us\n", node_n, ggml_op_list[node->op], );
 
         if (state->ith == 0 && cplan->abort_callback &&
@@ -14002,10 +14278,26 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
         }
+
+        // We do it at the end to ensure the data is available and the work buffer is not being used.
+        if (do_get_matrix_statistics && node_is_main_thread()) {
+            collect_matrix_statistics(true_node_n, &params, node);
+        }
     }
 
-    ggml_barrier(state->threadpool);
+    if (!do_count_node_time_counter){
+        time = ggml_time_us()-time;
+        papi_node_end(thread_papi_event_set, 0, params.ith, node_thread_count);
+        node_time_counter[0*(node_papi_ev_cnt+1)*node_thread_count+params.ith] += time;
+    }
 
+    //fprintf(stderr, "Papi stopped.");
+    destroy_event_set(&thread_papi_event_set);
+
+    init_node_counter_f();
+
+    ggml_barrier(state->threadpool);
+    //fprintf(stderr, "Exited succesfully!");
     return 0;
 }
 

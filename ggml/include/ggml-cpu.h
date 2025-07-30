@@ -8,9 +8,18 @@
 extern "C" {
 #endif
 
-long long* get_node_time_counter(int* sz);
-void clear_node_time_counter();
-void start_node_time_counter();
+long long* get_node_time_counter(int* sz, int* papi_cnt, int* nth);
+char* get_papi_events(int* n, int* m);
+int* get_papi_event_codes(int* maxn);
+char* get_layer_names(int* n, int* m);
+void clear_node_time_counter(void);
+void start_node_time_counter(void);
+void set_node_papi_count(int cnt);
+void set_node_main_thread_id(unsigned long tid);
+float* get_node_zero_ratio_array(int* layer_cnt_zr);
+int64_t* get_node_zero_count_arr(int* layer_cnt_zc);
+int64_t* get_node_element_count_arr(int* layer_cnt_ec);
+void set_node_matrix_statistics(bool val);
 
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
