@@ -20,6 +20,7 @@ float* get_node_zero_ratio_array(int* layer_cnt_zr);
 int64_t* get_node_zero_count_arr(int* layer_cnt_zc);
 int64_t* get_node_element_count_arr(int* layer_cnt_ec);
 void set_node_matrix_statistics(bool val);
+void count_stats_in_threads(void);
 
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
