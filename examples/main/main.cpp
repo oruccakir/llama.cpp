@@ -1,12 +1,13 @@
 
 #include "llama.h"
+#include "llama-context.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <fstream>
 #include <iostream>
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include <chrono>
 #include <algorithm>
 #include <random>
@@ -335,7 +336,7 @@ public:
 
     PreloadedModel() = default;
     PreloadedModel(int context_size) : context_size(context_size) {;}
-    int load_mix_modal_model(std::map<std::string, std::string> config){
+    int load_mix_modal_model(std::map<std::string, std::string> config, const std::vector<std::string>& embd_files){
         const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
         fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
         const std::string common_data_path = repo_path.string() + "/config.json";
@@ -369,10 +370,36 @@ public:
         model = llama_model_load_from_file(model_path.c_str(), model_params);
         vocab = llama_model_get_vocab(model);
 
+        std::cerr << "Embeddding shape:";
+        for (int i = 0; i < GGML_MAX_DIMS; i++)
+            std::cerr << ' ' << model->tok_embd->ne[i];
+        std::cerr << std::endl;
+
+        if (100 < model->tok_embd->ne[0] && model->tok_embd->ne[0] < 50000){
+            n_embd = model->tok_embd->ne[0];
+            std::cerr << "Number of embedding dimensions: " << n_embd << std::endl;
+        }
+
         if (model == NULL) {
             fprintf(stderr , "%s: error: unable to load model\n" , __func__);
             return 1;
         }
+
+
+
+
+        n_predict = std::stoi(config["n_tokens"]);
+
+        int ma = 0;
+        for (auto f : embd_files) {
+            ma = std::max(ma, (int)load_input_embeddings(f).size());
+        }
+        std::cerr << ma << ' ' << (ma/n_embd) << ' ' << n_predict << ' ' << (ma / n_embd) + n_predict + 1 << std::endl;
+        ma = (ma / n_embd) + n_predict + 1;
+        std::cerr << "Maximum tokens in query: " << ma << std::endl;
+        context_size = ma;
+
+
 
 
         auto sparams = llama_sampler_chain_default_params();
@@ -389,6 +416,7 @@ public:
 
         if (config.count("n_threads")) {
             ctx_params.n_threads = stoi(config["n_threads"]);
+            ctx_params.n_threads_batch = stoi(config["n_threads"]);
         }
 
         ctx = llama_init_from_model(model, ctx_params);
@@ -396,36 +424,9 @@ public:
         return 0;
     }
 
-    void set_context_from_embeddings(std::map<std::string, std::string>& config, const std::vector<std::string>& embd_files) {
-
-        const char* llama_repo_path_env = std::getenv("MULTI_MIX_MODAL_TRANSFORMERS_REPO_PATH");
-        fs::path repo_path = (llama_repo_path_env != nullptr) ? fs::path(llama_repo_path_env) : fs::current_path();
-        const std::string common_data_path = repo_path.string() + "/config.json";
-        json common_data;
-        std::ifstream json_file(common_data_path);
-        if (json_file.is_open()) {
-            json_file >> common_data;
-        } else {
-            fprintf(stderr, "Failed to open common data file\n");
-            return;
-        }
-        
-        n_embd                        = common_data["n_embd"];
-        std::cerr << "Nembd: " << n_embd << std::endl;
-
-        n_predict = std::stoi(config["n_tokens"]);
-
-        int ma = 0;
-        for (auto f : embd_files) {
-            ma = std::max(ma, (int)load_input_embeddings(f).size());
-        }
-        std::cerr << ma << ' ' << (ma/n_embd) << ' ' << n_predict << ' ' << (ma / n_embd) + n_predict + 1 << std::endl;
-        ma = (ma / n_embd) + n_predict + 1;
-        std::cerr << "Maximum tokens in query: " << ma << std::endl;
-        context_size = ma;
-    }
-
     int run_model_with_embeddings (std::string embd_file_path, std::string papi_results_save_file_path) {
+
+        std::cerr << "N_Threads: " << ctx->cparams.n_threads << ' ' << ctx->cparams.n_threads_batch << std::endl;
 
         llama_kv_cache_clear(ctx);
 
@@ -440,7 +441,7 @@ public:
 
         if (ctx == NULL) {
             fprintf(stderr , "%s: error: failed to create the llama_context\n" , __func__);
-            return 1;
+            exit(1);
         }
 
         llama_batch batch = llama_batch_init(n_tokens, n_embd,1);
@@ -595,12 +596,13 @@ public:
                 char eventName[PAPI_MAX_STR_LEN];
                 PAPI_event_code_to_name(presetEventCodes[i], eventName);
             }
+              
 
             if ( ( retval = PAPI_cleanup_eventset( EventSet ) ) != PAPI_OK )	{
                 PAPI_perror("14026");exit(0);}
 
             if ( ( retval = PAPI_destroy_eventset( &EventSet) ) != PAPI_OK ){
-                PAPI_perror("14029");exit(0);}
+                PAPI_perror("14029");exit(0);} 
 
             printf("\n\033[0;32mPAPI Profiling Completed!\n\033[0m");*/
         #endif
@@ -663,7 +665,13 @@ std::vector<int> papi_metric_ids;
 
 void set_custom_papi_metrics(const std::vector<std::string>& metrics) {
     init_papi_library();
+    int hw_cnt = PAPI_num_cmp_hwctrs(0);
     for (auto metric : metrics) {
+        if (metric == "EVENTSET_SPLIT") {
+            while (papi_metric_ids.size() % hw_cnt != 0)
+                papi_metric_ids.push_back(0);
+            continue;
+        }
         int mtr = 0;
         std::cerr << "Trying to add papi event " << metric << std::endl;
         int retval = PAPI_event_name_to_code(metric.data(), &mtr);
@@ -791,7 +799,7 @@ void add_first_token_counters(json& dict) {
         for (long long x : su)
             tsu += x;
         //std::cerr << enames[i] << ' ' << tsu << std::endl;
-        if (!(tsu >= 0 && tsu <= 100000000000ll)) std::cout << "Should crash" << std::endl;
+        if (!(tsu >= 0 && tsu <= 1000000000000000000ll)) std::cout << "Should crash" << std::endl;
         assert(tsu >= 0 && tsu <= 1000000000000000000ll);
         //if (!dict.contains(enames[i]) || !count_nodes){
         dict[enames[i]] = tsu;
@@ -1107,8 +1115,7 @@ int main(int argc, char ** argv) {
             for (int run = 0; run < num_runs; run++){
                 PreloadedModel model;
                 count_stats_in_threads();
-                model.set_context_from_embeddings(mix_modal_modal_mode_config, embd_files);
-                model.load_mix_modal_model(mix_modal_modal_mode_config);
+                model.load_mix_modal_model(mix_modal_modal_mode_config, embd_files);
                 if (set_metrics) {
                     int maxev = 0;
                     int* id_arr = get_papi_event_codes(&maxev);

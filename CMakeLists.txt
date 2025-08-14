@@ -66,9 +66,12 @@ option(LLAMA_ALL_WARNINGS_3RD_PARTY "llama: enable all compiler warnings in 3rd 
 option(LLAMA_FATAL_WARNINGS "llama: enable -Werror flag" OFF)
 
 # sanitizers
-option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    OFF)
-option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   OFF)
-option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" OFF)
+add_compile_options(-ggdb)
+link_libraries     (-ggdb)
+
+option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    ON)
+option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   ON)
+option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" ON)
 
 # utils
 option(LLAMA_BUILD_COMMON "llama: build common utils library" ${LLAMA_STANDALONE})

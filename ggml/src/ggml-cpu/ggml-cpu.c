@@ -13956,7 +13956,7 @@ int true_node_count = 0;
 int node_papi_ev_cnt = 0;
 int node_thread_count = 0;
 int node_papi_count = 0;
-long long node_time_counter[1<<20] = {0};           // Should be gigger than node_cnt * papi_events * num_threads
+long long node_time_counter[1<<25] = {0};           // Should be bigger than node_cnt * papi_events * num_threads
                                                     // Currently set to 1 million elements, 8MB.
 float   node_zero_ratio_counter[1<<12] = {0.0f};    // Should be bigger than node_count, currently 4 thousand elements, 16KB.
 int64_t node_zero_elem_counter[1<<12] = {0};        // Should be bigger than node_count, currently 4 thousand elements, 32KB.
@@ -13999,10 +13999,12 @@ void set_node_papi_count(int cnt) {
     node_papi_count = cnt;
 }
 
+bool is_first_model_evaluation = true;
 void clear_node_time_counter() {
     memset(node_time_counter, 0, sizeof(node_time_counter));
     memset(node_zero_elem_counter, 0, sizeof(node_zero_elem_counter));
     memset(node_elem_counter, 0, sizeof(node_elem_counter));
+    is_first_model_evaluation = true;
 }
 
 void set_node_main_thread_id(unsigned long tid) {
@@ -14176,8 +14178,8 @@ void init_node_counter_f() {
 #define NODE_MAT_BUFFSZ 1ll<<25
 float collect_matrix_statistics_buff[NODE_MAT_BUFFSZ] = {0};  // Should be bigger than biggest output matrix in graph.
                                                               // Currently set to ~33 million, 134MB.
-
 void collect_matrix_statistics(int node_n, struct ggml_compute_params* params, struct ggml_tensor* node) {
+    if (!is_first_model_evaluation) return;
     float* buff = NULL;
     int64_t matsz = ggml_nelements(node);
     if (node->type == GGML_TYPE_F32){
@@ -14244,9 +14246,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         node_thread_count = state->threadpool->n_threads_max;
     }
 
-    int64_t time;
-    int64_t time2;
-    int64_t true_cyc;
+    int64_t time = 0;
+    int64_t time2 = 0;
+    int64_t true_cyc = 0;
     if (do_count_stats_in_threads && !do_count_node_time_counter) {
         #ifdef ENABLE_PAPI
         papi_node_start(thread_papi_event_set);
@@ -14280,7 +14282,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             #endif
             time = ggml_time_us();
         }
+
         ggml_compute_forward(&params, node);
+        
         if (do_count_stats_in_threads && do_count_node_time_counter){
             time = ggml_time_us()-time;
             #ifdef ENABLE_PAPI
@@ -14301,14 +14305,14 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
             tp->ec    = GGML_STATUS_ABORTED;
         }
 
-        if (node_n + 1 < cgraph->n_nodes) {
+        if (node_n < cgraph->n_nodes) {
             int core_id = sched_getcpu();
             node_thread_core_ids[params.ith] = core_id;
             ggml_barrier(state->threadpool);
             for (int i = 0; i < params.nth; i++) {
                 if (i == params.ith) continue;
                 if (node_thread_core_ids[i] == core_id) {
-                    fprintf(stderr, "Other thread is running in the same core. PAPI statistics will get corrupted. Exiting.\n");
+                    fprintf(stderr, "Other thread is running in the same core. PAPI statistics will get corrupted.\n");
                     fprintf(stderr, "Thread %d running in same core as %d, core %d. (Thread id for %d is %ld)", 
                     params.ith, i, core_id, params.ith, pthread_self());
                 }
@@ -14328,6 +14332,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         true_cyc = PAPI_get_real_cyc()-true_cyc;
         papi_node_end(thread_papi_event_set, 0, params.ith, node_thread_count);
         node_time_counter[0*(node_papi_ev_cnt+2)*node_thread_count+params.ith] += time2;
+        node_time_counter[0*(node_papi_ev_cnt+2)*node_thread_count+node_thread_count+params.ith] += true_cyc;
         #else
         node_time_counter[0*(node_papi_ev_cnt+2)*node_thread_count+params.ith] += time*1000;
         #endif
@@ -14341,6 +14346,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     }
 
     ggml_barrier(state->threadpool);
+    is_first_model_evaluation = false;
     //fprintf(stderr, "Exited succesfully!");
     return 0;
 }
