@@ -464,65 +464,8 @@ public:
         //std::cerr << "END" << std::endl;
 
         #ifdef ENABLE_PAPI
-            printf("Enable Papi profiling\n");
-            int EventSet = PAPI_NULL,retval=0,preset_event_count=0;
-            int preset_event = 0x0;
-            PAPI_event_info_t preset_event_info;
-            int presetEventCodes[PAPI_MAX_PRESET_EVENTS]; 
-            long long papi_start_cycles, papi_end_cycles, papi_start_usec, papi_end_usec;
-
-
+            
             init_papi_library();
-
-            /*
-            retval = PAPI_create_eventset(&EventSet);
-            if (retval != PAPI_OK)
-                handle_error(retval);
-            std::cerr << "Main Event Set: " << retval << std::endl;
-
-            retval = PAPI_add_event(EventSet, PAPI_TOT_INS);
-            if (retval != PAPI_OK)
-                handle_error(retval);
-
-            retval = PAPI_set_multiplex(EventSet);
-            if (retval != PAPI_OK)
-                handle_error(retval);
-
-            for (int i = 0; i < PAPI_MAX_PRESET_EVENTS; i++) {
-                preset_event = PAPI_PRESET_MASK | i;
-                if ((PAPI_query_event(preset_event) == PAPI_OK) && (preset_event != PAPI_TOT_INS)) {
-                    retval = PAPI_add_event(EventSet, preset_event);
-                    if (retval == PAPI_OK) {
-                        presetEventCodes[preset_event_count++] = preset_event;
-                        char eventName[PAPI_MAX_STR_LEN];
-                        PAPI_event_code_to_name(preset_event, eventName);
-                        retval = PAPI_get_event_info(preset_event, &preset_event_info);
-                    }
-                }
-            }
-            if (preset_event_count == 0) {
-                printf("⚠️ Nothing added.\n");
-                exit(1);
-            }
-
-            retval = PAPI_start(EventSet);
-            if (retval != PAPI_OK){
-                std::cerr << "HERE" << std::endl;
-                handle_error(retval);
-            }
-
-            papi_start_cycles = PAPI_get_real_cyc();
-            papi_start_usec = PAPI_get_real_usec();
-            set_node_papi_count(preset_event_count + 1);
-            papi_event_count = preset_event_count+1;
-            papi_event_names = std::vector<std::string>(papi_event_count+1);
-            papi_event_names[0] = "time_us";
-            papi_event_names[1] = "PAPI_TOT_INS";
-            for (int i = 0; i < preset_event_count; i++) {
-                char eventName[PAPI_MAX_STR_LEN];
-                PAPI_event_code_to_name(presetEventCodes[i], eventName);
-                papi_event_names[i+2] = std::string(eventName);
-            }*/
         
         #endif
 
@@ -565,7 +508,6 @@ public:
                 std::string s(buf, n);
                 std::cerr << s;
                 model_output += s.c_str();
-                //printf("%s", s.c_str());
                 fflush(stdout);
 
                 batch = llama_batch_get_one(&new_token_id, 1);
@@ -577,35 +519,6 @@ public:
         }
 
         std::cerr << std::endl;
-
-        //std::cerr << "HERE" << std::endl;
-
-        #ifdef ENABLE_PAPI
-            /*papi_end_cycles = PAPI_get_real_cyc();
-            papi_end_usec = PAPI_get_real_usec();
-
-                    std::cerr << "HERE1" << std::endl;
-            std::vector<long long> values(preset_event_count + 1);
-            retval = PAPI_stop(EventSet, values.data());        std::cerr << "HERE2" << std::endl;
-
-            if (retval != PAPI_OK){
-                std::cerr << "HERE3" << std::endl;
-                handle_error(retval);
-            }
-            for (int i = 0; i < preset_event_count; i++) {
-                char eventName[PAPI_MAX_STR_LEN];
-                PAPI_event_code_to_name(presetEventCodes[i], eventName);
-            }
-              
-
-            if ( ( retval = PAPI_cleanup_eventset( EventSet ) ) != PAPI_OK )	{
-                PAPI_perror("14026");exit(0);}
-
-            if ( ( retval = PAPI_destroy_eventset( &EventSet) ) != PAPI_OK ){
-                PAPI_perror("14029");exit(0);} 
-
-            printf("\n\033[0;32mPAPI Profiling Completed!\n\033[0m");*/
-        #endif
 
         const auto t_main_end = ggml_time_us();
 
@@ -628,11 +541,6 @@ public:
         llama_perf_sampler_print(smpl);
         llama_perf_context_print(ctx);
         fprintf(stderr, "\n");
-
-
-        #ifdef ENABLE_PAPI
-            //save_papi_events_to_json_file(papi_results_save_file_path,values,preset_event_count,presetEventCodes,papi_end_cycles - papi_start_cycles,papi_end_usec - papi_start_usec);
-        #endif
 
         return 0;
     }
@@ -667,7 +575,7 @@ void set_custom_papi_metrics(const std::vector<std::string>& metrics) {
     init_papi_library();
     int hw_cnt = PAPI_num_cmp_hwctrs(0);
     for (auto metric : metrics) {
-        if (metric == "EVENTSET_SPLIT") {
+        if (metric == "EVENTSET_SPLIT" && count_nodes) {
             while (papi_metric_ids.size() % hw_cnt != 0)
                 papi_metric_ids.push_back(0);
             continue;
@@ -1114,8 +1022,8 @@ int main(int argc, char ** argv) {
             int idx_cnt = 0;
             for (int run = 0; run < num_runs; run++){
                 PreloadedModel model;
-                count_stats_in_threads();
                 model.load_mix_modal_model(mix_modal_modal_mode_config, embd_files);
+                count_stats_in_threads();
                 if (set_metrics) {
                     int maxev = 0;
                     int* id_arr = get_papi_event_codes(&maxev);

@@ -14236,7 +14236,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         atomic_store_explicit(&node_time_counter_sz, 1, memory_order_relaxed);
     }
 
-    if(do_count_stats_in_threads) {
+    if((do_count_stats_in_threads || node_is_main_thread())) {
         #ifdef ENABLE_PAPI
         create_event_set(&thread_papi_event_set);
         #endif
@@ -14249,7 +14249,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     int64_t time = 0;
     int64_t time2 = 0;
     int64_t true_cyc = 0;
-    if (do_count_stats_in_threads && !do_count_node_time_counter) {
+    if ((do_count_stats_in_threads || node_is_main_thread()) && !do_count_node_time_counter) {
         #ifdef ENABLE_PAPI
         papi_node_start(thread_papi_event_set);
         time2 = PAPI_get_real_nsec();
@@ -14273,8 +14273,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         if (init_node_counter && node_is_main_thread() && do_count_node_time_counter) {
             strcpy(&node_layer_names[true_node_n*40], ggml_op_list[node->op]);
         }
-
-        if (do_count_stats_in_threads && do_count_node_time_counter) {
+        
+        if ((do_count_stats_in_threads || node_is_main_thread()) && do_count_node_time_counter) {
             #ifdef ENABLE_PAPI
             papi_node_start(thread_papi_event_set);
             time2 = PAPI_get_real_nsec();
@@ -14285,7 +14285,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         ggml_compute_forward(&params, node);
         
-        if (do_count_stats_in_threads && do_count_node_time_counter){
+        if ((do_count_stats_in_threads || node_is_main_thread()) && do_count_node_time_counter){
             time = ggml_time_us()-time;
             #ifdef ENABLE_PAPI
             time2 = PAPI_get_real_nsec()-time2;
@@ -14325,7 +14325,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         }
     }
 
-    if (do_count_stats_in_threads && !do_count_node_time_counter){
+    if ((do_count_stats_in_threads || node_is_main_thread()) && !do_count_node_time_counter){
         time = ggml_time_us()-time;
         #ifdef ENABLE_PAPI
         time2 = PAPI_get_real_nsec()-time2;
@@ -14338,7 +14338,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         #endif
     }
 
-    if (do_count_stats_in_threads){
+    if ((do_count_stats_in_threads || node_is_main_thread())){
         #ifdef ENABLE_PAPI
         destroy_event_set(&thread_papi_event_set);
         #endif
