@@ -333,6 +333,7 @@ class PreloadedModel {
 public:
     int papi_event_count = 0;
     int n_predict;
+    bool prevent_end_tokens = false;
     std::vector<std::string> papi_event_names;
 
     PreloadedModel() = default;
@@ -425,6 +426,28 @@ public:
         return 0;
     }
 
+    bool is_end_token(llama_token token_id, const llama_vocab* vocab) {
+        if (llama_vocab_is_eog(vocab, token_id)) {
+            return true;
+        } else if (llama_vocab_is_control(vocab, token_id)) {
+            if (false)
+                std::cerr << "\nControl detected. Token id: " << token_id << ". Finalizing generation." << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    void remove_control_tokens(int32_t idx) {
+        float * logits = llama_get_logits_ith(ctx, idx);
+
+        const int n_vocab = llama_vocab_n_tokens(vocab);
+
+        for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+            if (is_end_token(token_id, vocab))
+                logits[token_id] = 0.0;
+        }
+    }
+
     int run_model_with_embeddings (std::string embd_file_path, std::string papi_results_save_file_path) {
 
         std::cerr << "N_Threads: " << ctx->cparams.n_threads << ' ' << ctx->cparams.n_threads_batch << std::endl;
@@ -488,17 +511,16 @@ public:
             n_pos += batch.n_tokens;
 
             {
+                if (prevent_end_tokens)
+                    remove_control_tokens(-1);
+
                 new_token_id = llama_sampler_sample(smpl, ctx, -1);
                 if (cnt_iter == 0) {
                     copy_first_token();
                 }
                 //std::cerr << "TOK_ID " << new_token_id << std::endl;
-                if (llama_vocab_is_eog(vocab, new_token_id)) {
+                if (is_end_token(new_token_id, vocab))
                     break;
-                } else if (llama_vocab_is_control(vocab, new_token_id)) {
-                    std::cerr << "\nControl detected. Token id: " << new_token_id << ". Finalizing generation." << std::endl;
-                    break;
-                }
 
                 char buf[128];
                 int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
@@ -879,6 +901,7 @@ int main(int argc, char ** argv) {
     bool adaptive_tok_limit = false;
     std::vector<std::string> papi_metrics;
     std::vector<int> adaptive_toks;
+    bool exhaust_token_limit = false;
     for(int i=1; i<argc; i++) {
         if(strcmp(argv[i],"--help")==0){
             printf("Usage: %s [options]\n", argv[0]);
@@ -1004,7 +1027,9 @@ int main(int argc, char ** argv) {
             char buff[20];
             sprintf(buff, "%d", ma);
             n_tokens = std::string(buff);
-        } 
+        } else if (strcmp(argv[i], "-exhaust_token_limit")==0) {
+            exhaust_token_limit = true;
+        }
         else{
             print_help();
             return 1;
@@ -1050,6 +1075,8 @@ int main(int argc, char ** argv) {
                 PreloadedModel model;
                 model.load_mix_modal_model(mix_modal_modal_mode_config, embd_files);
                 count_stats_in_threads();
+                if (exhaust_token_limit)
+                    model.prevent_end_tokens = true;
                 if (set_metrics) {
                     int maxev = 0;
                     int* id_arr = get_papi_event_codes(&maxev);

@@ -13957,7 +13957,7 @@ int node_papi_ev_cnt = 0;
 int node_thread_count = 0;
 int node_papi_count = 0;
 long long node_time_counter[1<<25] = {0};           // Should be bigger than node_cnt * papi_events * num_threads
-                                                    // Currently set to 1 million elements, 8MB.
+                                                    // Currently set to 33 million elements, 256MB.
 float   node_zero_ratio_counter[1<<12] = {0.0f};    // Should be bigger than node_count, currently 4 thousand elements, 16KB.
 int64_t node_zero_elem_counter[1<<12] = {0};        // Should be bigger than node_count, currently 4 thousand elements, 32KB.
 int64_t node_elem_counter[1<<12] = {0};             // Should be bigger than node_count, currently 4 thousand elements, 32KB.
@@ -14039,7 +14039,7 @@ void papi_node_end(int EventSet, int node_n, int ith, int nth) {
 
 int node_papi_event_codes[30] = {0};
 char node_papi_events[30*PAPI_MAX_STR_LEN];
-char node_layer_names[1000*40];
+char node_layer_names[100000*40]; // Fucking buffer overflow for chamaleon
 
 char* get_papi_events(int* n, int* m) {
     *n = node_papi_ev_cnt;
