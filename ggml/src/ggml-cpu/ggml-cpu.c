@@ -14100,7 +14100,7 @@ void create_event_set(int* EventSet) {
                 if (PAPI_query_event(node_papi_event_codes[i]) == PAPI_OK) {
                     retval = PAPI_add_event(*EventSet, node_papi_event_codes[i]);
                     if (retval != PAPI_OK) {      
-                        char name[30], err[100];
+                        char name[PAPI_MAX_STR_LEN], err[PAPI_MAX_STR_LEN+100];
                         PAPI_event_code_to_name(node_papi_event_codes[i], name);          
                         sprintf(err, "add %s", name);
                         PAPI_perror(err);

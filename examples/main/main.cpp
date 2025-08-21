@@ -325,13 +325,14 @@ class PreloadedModel {
 
     llama_sampler * smpl;
     llama_model * model;
-    int n_embd=0, n_predict, ngl;
+    int n_embd=0, ngl;
     const llama_vocab * vocab;
     std::string model_id, model_path;
     llama_context * ctx;
 
 public:
     int papi_event_count = 0;
+    int n_predict;
     std::vector<std::string> papi_event_names;
 
     PreloadedModel() = default;
@@ -875,7 +876,9 @@ int main(int argc, char ** argv) {
     bool multi_input = false;
     bool multi_input_shuffle = true;
     bool set_metrics = false;
+    bool adaptive_tok_limit = false;
     std::vector<std::string> papi_metrics;
+    std::vector<int> adaptive_toks;
     for(int i=1; i<argc; i++) {
         if(strcmp(argv[i],"--help")==0){
             printf("Usage: %s [options]\n", argv[0]);
@@ -980,7 +983,28 @@ int main(int argc, char ** argv) {
             matrix_statistics = true;
         } else if (strcmp(argv[i], "-n_threads")==0) {
             mix_modal_modal_mode_config["n_threads"] = argv[++i];
-        }
+        } else if (strcmp(argv[i], "-adaptive_tok_limit")==0) {
+            adaptive_tok_limit = true;
+            if (argc <= ++i) {
+                print_help();
+                return 1;
+            }
+            int num_queries = atoi(argv[i]);
+            adaptive_toks = std::vector<int>(num_queries);
+            for (int j = 0; j < num_queries; j++) {
+                if (argc <= ++i) {
+                    print_help();
+                    return 1;
+                }
+                adaptive_toks[j] = atoi(argv[i]);
+            }
+            int ma = 0;
+            for (int x : adaptive_toks)
+                ma = std::max(ma, x);
+            char buff[20];
+            sprintf(buff, "%d", ma);
+            n_tokens = std::string(buff);
+        } 
         else{
             print_help();
             return 1;
@@ -1015,8 +1039,10 @@ int main(int argc, char ** argv) {
             }
             int num_runs = 1;
             int num_hw_cnts = PAPI_num_cmp_hwctrs(0);
+            if (num_hw_cnts == 0) num_hw_cnts = 1000;
             if (set_metrics && count_nodes) {
                 num_runs = (papi_metric_ids.size()+num_hw_cnts-1)/num_hw_cnts;
+                num_runs = std::max(num_runs, 1);
                 n *= num_runs;
             }
             int idx_cnt = 0;
@@ -1048,8 +1074,11 @@ int main(int argc, char ** argv) {
                     clear_node_time_counter();
                     if (matrix_statistics)
                         set_node_matrix_statistics(true);
+                    if (adaptive_tok_limit) {
+                        assert(i < adaptive_toks.size());
+                        model.n_predict = adaptive_toks[i];
+                    }
                     model.run_model_with_embeddings(embd_files[i], res_paths[i]);
-                    //std::cerr << "HERE" << std::endl;
                     output_node_counters(res_paths[i]);
                     output_stream_matrix_stats(std::cout);
                     fclose(out);
@@ -1057,8 +1086,6 @@ int main(int argc, char ** argv) {
                     idx_cnt++;
                     std::cerr << "-----------------------------------------------------------------" << std::endl;
                     std::cerr << "Test " << idx_cnt << " of " << n << ". " << (1.0*idx_cnt/n*100) << "% completed." << std::endl;
-                    //std::cerr << "FINISHING SINGLE TEST" << std::endl;
-                    //break;
                 }
                 model.free_memory();
             }
